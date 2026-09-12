@@ -3,7 +3,7 @@ import copy
 import re
 import uuid
 from pathlib import Path
-from . import RelayError, invocation, next_step as steps, repository
+from . import RelayError, invocation, next_step as steps, repository, watch
 from .github import GitHub
 from .state import ReviewStore, write_json
 from . import review_snapshot as snapshots, review_operations as posts, review_git
@@ -250,6 +250,12 @@ def reassess(store, request, data, repo, gh):
     write_json(store.request_path(request["run_id"]) / "snapshot.json", current)
 
 
+def mark_watch(request, gh):
+    """After the selected execution is recorded, mark the PR once; a retry completes an unapplied mark."""
+    if request.get("watch") and request.get("status") == "recorded":
+        request["watch_result"] = watch.mark(gh, request["pr"], True, request.get("watch_result"))
+
+
 def result(store, request):
     units = posts.operations(store, request)
     items = request.get("candidate", {}).get("items", [])
@@ -259,6 +265,8 @@ def result(store, request):
              "application_history": request.get("application_history", []), "candidate_history": request.get("candidate_history", []),
              "excluded": [i for i in items if i.get("excluded")], "unresolved": [i for i in items if i.get("resolution") != "resolved"],
              "warnings": request["snapshot"]["warnings"], "error": request.get("error")}
+    if request.get("watch"):
+        value["watch"] = request.get("watch_result")
     write_json(store.request_path(request["run_id"]) / "result.json", value)
     return value
 
@@ -302,6 +310,8 @@ def execute(store, request, data, repo, gh):
     units = posts.recover(store, request, gh)
     fresh(repo, request, gh, units)
     if request["status"] == "recorded" and execution_complete(request, units):
+        mark_watch(request, gh)
+        store.save(request)
         return result(store, request)
     # Mixed units must be rejected before code, push, or any POST.
     for unit in candidate["operations"]:
@@ -342,6 +352,7 @@ def execute(store, request, data, repo, gh):
     fresh(repo, request, gh, posts.operations(store, request))
     request["status"] = "recorded"
     request.pop("error", None)
+    mark_watch(request, gh)
     store.save(request)
     return result(store, request)
 
@@ -371,7 +382,8 @@ def dispatch(data, registry, gh=None, repo=None):
             run_id = uuid.uuid4().hex
             snapshot = snapshots.snapshot(repo, gh, number, run_id)
             request = {"schema": 1, "run_id": run_id, "repository": repo, "pr": number, "mode": parsed["mode"], "input": parsed,
-                       "initial_checkout": repo["root"], "selection_reason": reason, "snapshot": snapshot, "status": "draft"}
+                       "initial_checkout": repo["root"], "selection_reason": reason, "snapshot": snapshot, "status": "draft",
+                       "watch": bool(parsed["options"].get("watch"))}
             store.save(request)
             write_json(store.request_path(run_id) / "snapshot.json", snapshot)
             return {"run_id": run_id, "work_path": str(store.request_path(run_id)), "mode": request["mode"], "snapshot": snapshot, "selection_reason": reason}
@@ -414,6 +426,7 @@ def dispatch(data, registry, gh=None, repo=None):
                 return {**result(store, request), "current_snapshot": current, "candidate": request.get("candidate"), "snapshot": request["snapshot"]}
             if execution_complete(request, units):
                 request["status"] = "recorded"
+                mark_watch(request, gh)
             store.save(request)
             return {**result(store, request), "candidate": request.get("candidate"), "snapshot": request["snapshot"]}
         except RelayError as exc:

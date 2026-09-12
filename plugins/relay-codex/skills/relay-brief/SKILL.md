@@ -7,7 +7,7 @@ description: Draft first, review, approve and record a concise versioned executi
 
 Read [workflow](../../references/workflow.md) and [recording](../../references/recording.md). Resolve resource paths relative to this installed SKILL.md, not the user's cwd.
 
-Require a positive issue number first, then optional `--lang <language>` and natural-language context. Use inspect with stage brief. Read source_issue as reference material, current comments and relevant code. Record investigated HEAD and file scope. Use the [brief template](../../templates/brief.md).
+Require a positive issue number first, then optional `--watch`, `--lang <language>` and natural-language context. Use inspect with stage brief. Read source_issue as reference material, current comments and relevant code. Record investigated HEAD and file scope. Use the [brief template](../../templates/brief.md).
 
 Draft first: investigate available evidence, save the complete draft under work_path, and show it with a revision summary. Mark confirmed facts, assumptions and unknowns separately. Even when the cause is unknown, impact or verification is uncertain, or detailed design seems necessary, put these concerns and review questions in the draft. Do not ask questions, request information, approval or path selection before showing the draft. Do not stop draft creation because of a suitability judgment. The first human interaction is review of the complete saved draft. Technical invocation/repository/issue failures are failures, not a preliminary approval flow; preserve available evidence in a local draft when possible, and never invent an inaccessible target.
 

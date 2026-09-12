@@ -3,7 +3,7 @@ import json
 import re
 import uuid
 from pathlib import Path, PurePosixPath
-from . import RelayError, invocation, next_step as steps, repository as gitrepo
+from . import RelayError, invocation, next_step as steps, repository as gitrepo, watch
 from .artifacts import collect, digest, reference
 from .github import GitHub
 from .runs import parse_evidence
@@ -181,7 +181,7 @@ def inspect_request(data, repo, gh, registry):
             "issue": parsed["issue"], "issue_data": issue, "description": parsed["description"], "head": head, "base": base,
             "base_sha": base_sha, "default": default, "default_sha": default_sha, **source,
             "merge_base": merge, "diff": diff, "templates": template, "selection": selection,
-            "dirty": bool(gitrepo.git(repo["cwd"], "status", "--porcelain"))}
+            "dirty": bool(gitrepo.git(repo["cwd"], "status", "--porcelain")), "watch": bool(options.get("watch"))}
     if result["status"] == "inspected":
         result["inspection_hash"] = inspection_hash(result)
     return result
@@ -195,7 +195,11 @@ def check_identity(request, repo, store):
         raise RelayError("repository", "Remote address changed; inspect and prepare again.")
 
 
-def save_result(store, request, result):
+def save_result(store, request, result, gh=None):
+    # Marking follows the confirmed PR and never changes the request hash or the PR itself.
+    if request.get("watch") and gh is not None and result.get("status") in ("recorded", "existing"):
+        request["watch_result"] = watch.mark(gh, result["number"], True, request.get("watch_result"))
+        result["watch"] = request["watch_result"]
     request["status"] = result["status"]
     request["result"] = result
     store.save(request)
@@ -236,7 +240,7 @@ def prepare_request(data, repo, gh, store, registry):
     if len(body) > 65000:
         raise RelayError("length", "Shorten and review the PR body; it exceeds the supported limit.")
     keys = ("repository", "remote_url", "issue", "head", "base", "head_sha", "base_sha", "default", "default_sha",
-            "local_sha", "remote_sha", "relation", "push_needed", "selection", "dirty")
+            "local_sha", "remote_sha", "relation", "push_needed", "selection", "dirty", "watch")
     request = {key: inspected[key] for key in keys}
     request.update(schema=1, request_id=request_id, common_dir=str(store.common), operation="create", status="prepared",
                    title=title, body=body, draft=draft, constraints=constraints, next_step=suggestion,
@@ -250,7 +254,7 @@ def prepare_request(data, repo, gh, store, registry):
             "push_needed": request["push_needed"], "constraints": constraints, "next_step": suggestion}
 
 
-def verify_pull(store, request, pull, completed=False):
+def verify_pull(store, request, pull, gh=None, completed=False):
     if request.get("number") and pull.get("number") != request["number"]:
         raise RelayError("verification", "Read-back returned another PR number.")
     if not matching(pull, request["repository"], request["head"], request["base"]):
@@ -265,14 +269,14 @@ def verify_pull(store, request, pull, completed=False):
         result["content_changes"] = [key for key in fields if result[key] != request[key]]
     result["sha_changes"] = {side: {"prepared": request[side + "_sha"], "observed": pull[side].get("sha")}
                              for side in ("head", "base") if pull[side].get("sha") != request[side + "_sha"]}
-    return save_result(store, request, result)
+    return save_result(store, request, result, gh)
 
 
 def recover(store, request, gh):
     """Read only, including after process death between remote write and local save."""
     # Completed writes remain completed even if later edits or a failed GET are observed.
     if request["status"] == "recorded":
-        return verify_pull(store, request, gh.pull(request["number"]), completed=True)
+        return verify_pull(store, request, gh.pull(request["number"]), gh, completed=True)
     try:
         if request["operation"] == "update" or request.get("number"):
             pull = gh.pull(request["number"])
@@ -287,7 +291,7 @@ def recover(store, request, gh):
             request["number"] = matches[0]["number"]
             store.save(request)
             pull = gh.pull(request["number"])
-        return verify_pull(store, request, pull)
+        return verify_pull(store, request, pull, gh)
     except RelayError as exc:
         request.update(status="uncertain", failure={"stage": "reconcile", "code": exc.code, "message": str(exc)[:2000]})
         store.save(request)
@@ -349,7 +353,7 @@ def create_request(data, repo, gh, store):
         return {"status": "prepared", "request_id": request["request_id"], "message": "Body draft only; no remote write."}
     found = existing(gh, repo, request["head"], request["base"])
     if found:
-        return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")))
+        return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")), gh)
     if request["status"] == "pushing":
         actual = gitrepo.remote_tip(repo, request["head"])
         if actual == request["head_sha"]:
@@ -366,7 +370,7 @@ def create_request(data, repo, gh, store):
         push_source(store, request, repo, gh)
     found = existing(gh, repo, request["head"], request["base"])
     if found:
-        return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")))
+        return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")), gh)
     check_refs(request, repo, gh, allow_pushed=True)
     request.update(status="creating", payload={key: request[key] for key in ("title", "body", "head", "base", "draft")})
     store.save(request)
@@ -379,7 +383,7 @@ def create_request(data, repo, gh, store):
         if exc.code == "github_rejected":
             found = existing(gh, repo, request["head"], request["base"])
             if found:
-                return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")))
+                return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")), gh)
             raise
         return recover(store, request, gh)
     if isinstance(response, dict) and type(response.get("number")) is int:
@@ -427,7 +431,7 @@ def update_request(data, repo, gh, store):
                "number": data["number"], "expected_hash": data["expected_hash"], "title": data["title"], "body": body,
                "head": pull["head"]["ref"], "base": pull["base"]["ref"], "head_sha": pull["head"]["sha"],
                "base_sha": pull["base"]["sha"], "status": "prepared", "next_step": suggestion,
-               "previous_title": pull["title"], "previous_body": old_body}
+               "previous_title": pull["title"], "previous_body": old_body, "watch": data.get("watch") is True}
     request["hash"] = candidate_hash(request)
     store.save(request)
     (store.request_path(request["request_id"]) / "body.md").write_text(body, encoding="utf-8", newline="\n")
@@ -491,7 +495,7 @@ def dispatch(data, registry, gh=None, repo=None):
             pull = gh.pull(request["result"]["number"])
             if not matching(pull, repo, request["head"], request["base"]):
                 raise RelayError("conflict", "Existing PR branches changed.")
-            return save_result(store, request, result_for(pull, "existing", repo.get("host", "github.com")))
+            return save_result(store, request, result_for(pull, "existing", repo.get("host", "github.com")), gh)
         if request["status"] in UNCERTAIN or request["status"] == "recorded":
             return recover(store, request, gh)
         if request["status"] == "pushing":

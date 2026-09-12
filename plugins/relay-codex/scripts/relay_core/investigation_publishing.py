@@ -6,7 +6,7 @@ import re
 import uuid
 from pathlib import Path
 
-from . import RelayError
+from . import RelayError, watch
 from . import next_step as steps
 from .artifacts import decode, digest, normalize, render
 from .publishing import matching_request
@@ -19,7 +19,7 @@ SUMMARY = re.compile(r"\n<details>\n<summary>Relay investigation recovery</summa
 
 def frozen_summary(run):
     # Exclude recursive publication payloads and history that is already journaled.
-    return {k: copy.deepcopy(v) for k, v in run.items() if k not in ("pending", "history", "applied_events", "publication", "target", "last_record")}
+    return {k: copy.deepcopy(v) for k, v in run.items() if k not in ("pending", "history", "applied_events", "publication", "target", "last_record", "watch")}
 
 
 def overview(run):
@@ -158,6 +158,10 @@ def publish(store, state, data, gh):
     run["last_record"] = {"target": target, "url": verified["html_url"], "hash": candidate["hash"],
                           "content_hash": published["meta"]["hash"], "version": candidate["version"],
                           "next_step": published["next_step"]}
+    record = watch.mark(gh, state["issue"], state.get("options", {}).get("watch"), candidate.get("watch"))
+    if record is not None:
+        candidate["watch"] = run["watch"] = run["last_record"]["watch"] = record
+        write_json(path / "candidate.json", candidate)
     save(store, state, run)
     return run["last_record"]
 

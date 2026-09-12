@@ -4,7 +4,7 @@ import difflib
 import json
 import uuid
 from pathlib import Path
-from . import RelayError, baselines
+from . import RelayError, baselines, watch
 from . import next_step as steps
 from .artifacts import collect, decode, digest, mentions_request, normalize, reference, render
 from .state import read_json, write_json
@@ -228,6 +228,11 @@ def publish(store, state, authorization, gh, registry):
     if frozen["run_id"]:
         state.setdefault("implementation_targets", {})[frozen["run_id"]] = actual_target
     state.get("legacy", {}).pop(actual_target, None)
+    # Marking follows the verified publication and never undoes it. The record lives on
+    # the frozen request, so a retry of the same request only completes an unapplied mark.
+    record = watch.mark(gh, number, state.get("options", {}).get("watch"), frozen.get("watch"))
+    if record is not None:
+        frozen["watch"] = state["watch"] = state["last_record"]["watch"] = record
     write_json(store.path / "candidate.json", frozen)
     store.save(state)
     return state["last_record"]

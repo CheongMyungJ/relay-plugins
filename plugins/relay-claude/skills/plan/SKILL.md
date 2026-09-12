@@ -8,7 +8,7 @@ description: Draft, revise, approve, and record an implementation plan from a re
 
 Read [workflow](../../references/workflow.md) and [recording](../../references/recording.md). Resolve resource paths relative to this installed SKILL.md, not the user's cwd.
 
-Require a positive issue number, then optional `--lang <language>` and natural-language context. Read the current recorded intent and spec comments, repository instructions, relevant source and existing validation commands. If either required document is missing or stale, explain what must be reviewed before drafting the plan.
+Require a positive issue number, then optional `--watch`, `--lang <language>` and natural-language context. Read the current recorded intent and spec comments, repository instructions, relevant source and existing validation commands. If either required document is missing or stale, explain what must be reviewed before drafting the plan.
 
 Use the host's dedicated planning capability when available and permitted. Do not claim planning mode is active if it is unavailable. Preserve the plan as a reviewable Markdown document using [plan template](../../templates/plan.md): Files that change, Order of work, Risks, Proof. List concrete paths, dependencies, completion evidence and unresolved assumptions. Distinguish planned commands from checks actually run.
 

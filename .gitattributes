@@ -1,0 +1,2 @@
+plugins/*/bin/relay-dispatch text eol=lf
+plugins/*/bin/relay-dispatch.cmd text eol=crlf

@@ -8,7 +8,7 @@ description: Draft, revise, approve, and record a detailed Relay intent as one v
 
 Read [workflow](../../references/workflow.md) and [recording](../../references/recording.md). Resolve resource paths relative to this installed SKILL.md, not the user's cwd.
 
-Require a positive issue number first, then optional `--lang <language>` and natural-language context. Use inspect with stage intent. Read source_issue as reference material and the existing intent comment when present. A plain GitHub issue is sufficient to start; do not create a replacement issue if the number is missing or inaccessible.
+Require a positive issue number first, then optional `--watch`, `--lang <language>` and natural-language context. Use inspect with stage intent. Read source_issue as reference material and the existing intent comment when present. A plain GitHub issue is sufficient to start; do not create a replacement issue if the number is missing or inaccessible.
 
 Use the [intent template](../../templates/intent.md). Reuse the issue's known facts and clarify the problem, goals, scope and success criteria with the user. Do not invent unknown causes or solutions. Show the complete draft and revision summary, then incorporate feedback in this session.
 

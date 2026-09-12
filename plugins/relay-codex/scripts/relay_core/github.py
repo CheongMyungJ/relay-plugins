@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import tempfile
+import urllib.parse
 from pathlib import Path
 from . import RelayError
 
@@ -75,6 +76,43 @@ class GitHub:
 
     def viewer(self):
         return self.api("user")["login"]
+
+    def item(self, number):
+        """An issue or pull request as the issues endpoint returns it, without the PR check."""
+        return self.api(f"{self.prefix}/issues/{number}")
+
+    def label(self, name):
+        try:
+            return self.api(f"{self.prefix}/labels/{urllib.parse.quote(name, safe='')}")
+        except RelayError as exc:
+            if exc.code == "github_rejected" and "HTTP 404" in str(exc):
+                return None
+            raise
+
+    def create_label(self, payload):
+        return self.api(f"{self.prefix}/labels", "POST", payload)
+
+    def add_labels(self, number, names):
+        return self.api(f"{self.prefix}/issues/{number}/labels", "POST", {"labels": list(names)})
+
+    def remove_label(self, number, name):
+        return self.api(f"{self.prefix}/issues/{number}/labels/{urllib.parse.quote(name, safe='')}", "DELETE")
+
+    def add_assignees(self, number, logins):
+        return self.api(f"{self.prefix}/issues/{number}/assignees", "POST", {"assignees": list(logins)})
+
+    def watched(self, login, label):
+        """Open issues and pull requests carrying the label and assigned to login; PRs keep pull_request."""
+        query = urllib.parse.urlencode({"state": "open", "labels": label, "assignee": login, "per_page": 100})
+        return self.api(f"{self.prefix}/issues?{query}", pages=True)
+
+    def comments_since(self, number, since):
+        query = urllib.parse.urlencode({"per_page": 100, "since": since})
+        return self.api(f"{self.prefix}/issues/{number}/comments?{query}", pages=True)
+
+    def review_comments_since(self, number, since):
+        query = urllib.parse.urlencode({"per_page": 100, "since": since})
+        return self.api(f"{self.prefix}/pulls/{number}/comments?{query}", pages=True)
 
     def create_pull(self, payload):
         return self.api(f"{self.prefix}/pulls", "POST", payload)

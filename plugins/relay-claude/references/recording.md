@@ -37,6 +37,8 @@ Document publish authorization:
 ```
 Implementation report authorization instead uses execution_authorized:true and run_id, with matching request_id/hash. This records an already requested execution and does not need repeated document approval.
 
+With `--watch` in the inspected invocation, publish marks the target after read-back and adds `watch` to its result: `{"requested":true,"applied":bool,"label":"relay:watch","assignee":login,"assignees":[...],"warning":str|null,"error":str|null}`. `applied:false` carries `error`; rerunning publish with the same authorization repeats no write and only retries the marking.
+
 ## Legacy records
 
 Without Relay metadata, comment documents are not automatically assumed approved. inspect exposes raw comment body and numeric target ID. The issue body cannot be bound or adopted as intent. After user confirmation of a comment, send inspect the same input plus legacy_confirmed:true and a legacy mapping:

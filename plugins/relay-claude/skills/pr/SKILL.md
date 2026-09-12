@@ -8,7 +8,7 @@ description: Create a GitHub pull request from an issue's implementation branch,
 
 Read [PR protocol](../../references/pr.md) for the helper contract and recovery rules. Use [PR template](../../templates/pr.md) when the repository has no template.
 
-Accept an optional positive issue number, then contiguous `--branch <source>` and `--base <target>` options, then optional natural-language instructions. The repository is the Git repository containing invocation cwd, using origin or its sole GitHub remote. An explicit PR invocation authorizes necessary ordinary source-branch push and PR creation. Honor draft PR, body-draft-only, no-push and later holds. Do not add the document approval workflow to a clear PR request.
+Accept an optional positive issue number, then contiguous `--watch`, `--branch <source>` and `--base <target>` options, then optional natural-language instructions. The repository is the Git repository containing invocation cwd, using origin or its sole GitHub remote. An explicit PR invocation authorizes necessary ordinary source-branch push and PR creation. Honor draft PR, body-draft-only, no-push and later holds. Do not add the document approval workflow to a clear PR request.
 
 Call the dedicated helper `pr` command, never document inspect/prepare/publish or implementation begin/restore. Keep the returned repository and request ID for this session. Resume unfinished requests first. Existing PR results end the creation flow: report the verified URL and branches without changing title, body, issue links or remote refs. Update an existing PR only when explicitly requested.
 
@@ -24,7 +24,7 @@ For explicit updates, read the exact PR, preserve unrelated user content and eve
 
 Explicitly rejected updates can be retried with the same request ID after resolving the cause and rechecking current content and authorization. Resuming an already recorded request reports subsequent content_changes and current PR state without undoing completion; distinguish these later edits from an unconfirmed write.
 
-Finish with the verified PR URL, source → target, actual open/closed/merged/draft state, and unresolved failures or SHA changes. Code edits, commits, branch rewriting, force/default-branch pushes, forks, merge/auto-merge, deployment and automatic next-stage invocation are outside this skill.
+Finish with the verified PR URL, source → target, actual open/closed/merged/draft state, the `watch` result when requested, and unresolved failures or SHA changes. Code edits, commits, branch rewriting, force/default-branch pushes, forks, merge/auto-merge, deployment and automatic next-stage invocation are outside this skill.
 
 Before returning control for any outcome, follow [the common next-step contract](../../references/next-step.md): submit one `next_step` naming a registered skill or explicit null with a one-line reason, chosen from current evidence. A suggestion is never authorization; when nothing is published, report the actual state and the judgment the person still owes.
 
