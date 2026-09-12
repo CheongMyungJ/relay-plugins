@@ -1,0 +1,5 @@
+interface:
+  display_name: "Relay pr"
+  short_description: "Create and reconcile branch-based GitHub PRs."
+policy:
+  allow_implicit_invocation: false

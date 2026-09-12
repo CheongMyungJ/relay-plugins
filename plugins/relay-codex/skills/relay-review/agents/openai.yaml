@@ -1,0 +1,5 @@
+interface:
+  display_name: "Relay review"
+  short_description: "Draft PR reviews and execute selected responses."
+policy:
+  allow_implicit_invocation: false

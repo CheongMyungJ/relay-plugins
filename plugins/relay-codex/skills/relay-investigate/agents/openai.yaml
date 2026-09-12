@@ -1,0 +1,5 @@
+interface:
+  display_name: "Relay investigate"
+  short_description: "Reproduce issues and review preserved investigation evidence."
+policy:
+  allow_implicit_invocation: false

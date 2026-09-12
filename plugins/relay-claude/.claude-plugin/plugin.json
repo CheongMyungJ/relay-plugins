@@ -1,0 +1,10 @@
+{
+  "name": "relay",
+  "version": "0.1.2",
+  "description": "Reviewed SDLC artifacts, implementation, GitHub pull requests and PR reviews.",
+  "author": {
+    "name": "CheongMyungJ"
+  },
+  "repository": "https://github.com/CheongMyungJ/relay",
+  "license": "MIT"
+}

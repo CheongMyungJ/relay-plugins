@@ -1,0 +1,15 @@
+{
+  "name": "relay",
+  "version": "0.1.2",
+  "skills": {
+    "open": {"claude":"open","codex":"relay-open","issue":"forbidden","options":{"lang":"value"},"requires":[],"artifact":"issue","targets":["repository"]},
+    "intent": {"claude":"intent","codex":"relay-intent","issue":"required","options":{"lang":"value"},"requires":[],"artifact":"intent","targets":["issue"]},
+    "design": {"claude":"design","codex":"relay-design","issue":"required","options":{"lang":"value"},"requires":["intent"],"artifact":"spec","targets":["issue"]},
+    "plan": {"claude":"plan","codex":"relay-plan","issue":"required","options":{"lang":"value"},"requires":["intent","spec"],"artifact":"plan","targets":["issue"]},
+    "brief": {"claude":"brief","codex":"relay-brief","issue":"required","options":{"lang":"value"},"requires":[],"artifact":"brief","targets":["issue"]},
+    "implement": {"claude":"implement","codex":"relay-implement","issue":"required","options":{"branch":"value","base":"value","worktree":"optional-equals","basis":"value"},"requires":[],"baseline_sets":{"formal":["intent","spec","plan"],"brief":["brief"]},"artifact":"implementation","targets":["issue"]},
+    "pr": {"claude":"pr","codex":"relay-pr","issue":"optional","options":{"branch":"value","base":"value"},"requires":[],"execution":"pr","targets":["issue","repository"]},
+    "review": {"claude":"review","codex":"relay-review","pr":"optional","options":{"reviewer":"flag","author":"flag","lang":"value"},"requires":[],"execution":"review","targets":["pr"]},
+    "investigate": {"claude":"investigate","codex":"relay-investigate","issue":"required","options":{"lang":"value"},"requires":[],"execution":"investigate","targets":["issue"]}
+  }
+}

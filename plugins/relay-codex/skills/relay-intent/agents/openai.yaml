@@ -1,0 +1,5 @@
+interface:
+  display_name: "Relay intent"
+  short_description: "Review and record this Relay workflow stage."
+policy:
+  allow_implicit_invocation: false

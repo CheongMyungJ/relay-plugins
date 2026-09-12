@@ -1,0 +1,25 @@
+{
+  "name": "relay",
+  "version": "0.1.2",
+  "description": "Reviewed SDLC artifacts, implementation, GitHub pull requests and PR reviews.",
+  "author": {
+    "name": "CheongMyungJ"
+  },
+  "repository": "https://github.com/CheongMyungJ/relay",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "defaultPrompt": [
+      "Use $relay-open to draft and review a new issue for this repository."
+    ],
+    "displayName": "Relay",
+    "shortDescription": "Review intent, spec, plan and implementation.",
+    "longDescription": "Nine explicitly invoked skills record requests, investigations, intent, design, plans, briefs, implementation, pull requests and PR reviews.",
+    "developerName": "CheongMyungJ",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ]
+  }
+}

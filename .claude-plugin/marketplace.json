@@ -1,0 +1,15 @@
+{
+  "name": "relay",
+  "owner": {
+    "name": "CheongMyungJ"
+  },
+  "metadata": {
+    "description": "Relay SDLC skills for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "relay",
+      "source": "./plugins/relay-claude"
+    }
+  ]
+}
