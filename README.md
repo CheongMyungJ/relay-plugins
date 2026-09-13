@@ -42,7 +42,7 @@ Windows에서는 Windows Terminal(`wt`)과 PowerShell이 필요합니다. PowerS
 Linux/macOS는 `tmux` 런처를 설정할 수 있습니다. Python은 `python --version`으로 실제 실행을 확인하세요.
 
 먼저 설치된 패키지 루트를 확인합니다. Claude는 `claude plugin list --json`의 `relay@relay` 항목에서
-`installPath`를 봅니다. Codex는 `codex plugin add relay@relay`가 출력하는 `Installed plugin root`를 봅니다.
+`installPath`를 봅니다. Codex는 `codex plugin add relay@relay --json` 결과의 `installedPath`를 봅니다.
 두 호스트 중 디스패처 실행에 사용할 패키지 하나를 선택하고, 아래 `<plugin>`을 그 절대 경로로 바꿉니다.
 
 ```text
@@ -71,16 +71,38 @@ relay-dispatch run
 
 ### 디스패처 업데이트
 
-현재 래퍼는 설치 당시 패키지의 절대 경로를 기억합니다. 플러그인 업데이트 후에는 아래 순서로 갱신합니다.
+`0.2.1`부터 호스트 모드의 `relay-dispatch`는 실행할 때마다 선택된 Claude 또는 Codex의 현재 설치를 찾습니다.
+아래 최초 이전을 마쳤다면 일반 플러그인 업데이트마다 `install-shim`을 다시 실행할 필요가 없습니다.
 
 1. 실행 중인 `relay-dispatch run`을 `Ctrl+C`로 종료합니다.
-2. 아래 플러그인 업데이트 명령을 실행합니다.
-3. 새 설치 경로를 확인하고 **새 패키지의** `dispatcher/relay_dispatch.py install-shim`을 실행합니다.
-4. `relay-dispatch status`로 확인한 뒤 `relay-dispatch run`을 다시 실행합니다.
+2. [업데이트](#업데이트)의 명령으로 사용하는 호스트의 플러그인을 갱신합니다. Codex는 `marketplace upgrade` 다음 `plugin add`까지 실행합니다.
+3. 실행 패키지의 버전과 상태를 확인한 뒤 디스패처를 다시 시작합니다.
 
-PATH 등록과 감시 저장소 등록은 반복할 필요가 없습니다. 설정과 장부도 유지됩니다.
-옛 래퍼와 코드가 함께 남아 있으면 경고 없이 옛 버전이 실행될 수 있으므로 경고 유무와 관계없이 이 절차를 따릅니다.
-설치 경로 자동 추적 개선은 별도 후속 작업입니다.
+```text
+relay-dispatch package show
+relay-dispatch status
+relay-dispatch run
+```
+
+이미 실행 중인 디스패처에는 업데이트가 적용되지 않으므로 재시작이 필요합니다.
+PATH와 감시 저장소는 다시 등록하지 않아도 됩니다. 설정·장부·로그도 유지됩니다.
+
+#### 기존 0.2.0 래퍼의 최초 이전
+
+`0.2.0`에서 만든 래퍼는 옛 패키지의 절대 경로를 기억합니다. 플러그인을 업데이트한 뒤
+[최초 설정](#최초-설정)에서 안내한 방법으로 **새 설치 경로**를 확인하고, 아래 명령을 한 번 실행하세요.
+
+```text
+python "<새 설치 경로>/dispatcher/relay_dispatch.py" install-shim
+relay-dispatch package show
+```
+
+`package` 명령을 인식하지 못하거나 옛 설치 경로가 없어 실행에 실패할 때도 같은 방법으로 이전할 수 있습니다.
+새 래퍼가 표시하는 버전과 실행 루트를 확인한 뒤 `relay-dispatch run`을 다시 시작하세요.
+
+이후 `부트스트랩 갱신 가능: install-shim` 안내가 나오는 릴리스에서는 새 설치 경로의 `install-shim`을 다시 실행합니다.
+개발용 `--path` 고정 모드는 호스트 업데이트를 자동으로 따라가지 않습니다.
+호스트 모드로 전환하려면 새 설치 경로에서 `install-shim --host claude` 또는 `install-shim --host codex`를 실행하세요.
 
 ## 업데이트
 
