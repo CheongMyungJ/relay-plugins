@@ -9,27 +9,32 @@ from pathlib import Path
 from relay_core import RelayError
 
 
+# Sessions the dispatcher opens run without per-tool permission prompts. Codex's option also lifts its sandbox.
+# Relay's own draft review and exact publication approval stay inside the skills; this only covers host tool prompts.
+PERMISSION_OPTIONS = {"claude": "--dangerously-skip-permissions", "codex": "--dangerously-bypass-approvals-and-sandbox"}
+
+
 def session_argv(host, prompt, name, session_id, claude_options=("--session-id", "--name")):
     if host == "claude":
-        argv = ["claude"]
+        argv = ["claude", PERMISSION_OPTIONS["claude"]]
         if "--session-id" in claude_options:
             argv += ["--session-id", session_id]
         if "--name" in claude_options:
             argv += ["--name", name]
         return argv + [prompt]
     if host == "codex":
-        return ["codex", prompt]
+        return ["codex", PERMISSION_OPTIONS["codex"], prompt]
     if host == "opencode":
         return ["opencode", "--prompt", prompt]
     raise RelayError("input", "unknown host: " + str(host))
 
 
 def resume_argv(host, session_id):
-    """How to reopen a recorded session; Codex and opencode choose from their own pickers."""
+    """How to reopen a recorded session with the same permission policy; Codex and opencode choose from their own pickers."""
     if host == "claude":
-        return ["claude", "--resume", session_id]
+        return ["claude", PERMISSION_OPTIONS["claude"], "--resume", session_id]
     if host == "codex":
-        return ["codex", "resume"]
+        return ["codex", "resume", PERMISSION_OPTIONS["codex"]]
     if host == "opencode":
         return ["opencode"]
     raise RelayError("input", "unknown host: " + str(host))

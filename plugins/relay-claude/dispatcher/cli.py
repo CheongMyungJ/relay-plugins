@@ -2,14 +2,16 @@
 import argparse
 import datetime
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
+import relay_core
 from relay_core import RelayError, watch
 from relay_core.github import GitHub
-from relay_core.state import read_json
-from . import config as configuration, launcher as launchers, log as logs, loop
+from relay_core.state import read_json, write_json
+from . import boot, config as configuration, launcher as launchers, log as logs, loop
 from .ledger import Ledger, iso, item_key, parse
 from .launcher import resume_argv, resume_hint, shell_text
 
@@ -18,8 +20,8 @@ ENTRY = ROOT / "dispatcher" / "relay_dispatch.py"
 REGISTRY_PATH = ROOT / "relay.json"
 COMMAND_WAIT = 90.0  # seconds a one-shot command waits for `run` to finish its cycle before giving up
 
-CMD_WRAPPER = '@echo off\r\npython "{entry}" %*\r\n'
-SH_WRAPPER = '#!/bin/sh\nexec python "{entry}" "$@"\n'
+CMD_WRAPPER = '@echo off\r\npython "%~dp0relay_dispatch_boot.py" %*\r\n'
+SH_WRAPPER = '#!/bin/sh\nexec python "$(dirname "$0")/relay_dispatch_boot.py" "$@"\n'
 
 
 def utc_now():
@@ -84,13 +86,54 @@ def context(env, config, launcher=None):
                         login=env.ledger.data.get("login") if env.ledger.data else None, remote_for=env.remote_for)
 
 
-def check_shim(env):
-    wrapper = env.home / "bin" / ("relay-dispatch.cmd" if sys.platform == "win32" else "relay-dispatch")
-    if not wrapper.exists():
-        return
-    text = wrapper.read_text(encoding="utf-8")
-    if str(ENTRY) not in text:
-        env.out(f"경고: {wrapper} 가 다른 엔트리를 가리킨다 (현재 {ENTRY}). `relay-dispatch install-shim`을 다시 실행하라.")
+def start_package(env, *, record_last=True):
+    env.selected, env.resolved, env.package_error = None, None, None
+    try:
+        chosen, signature = boot.read_selection(env.home)
+        env.selected = chosen
+        try:
+            inherited = json.loads(os.environ.get("RELAY_DISPATCH_RESOLVED", "null"))
+        except ValueError:
+            inherited = None
+        if (isinstance(inherited, dict) and inherited.get("selection_hash") == signature
+                and all(isinstance(inherited.get(k), str) for k in ("root", "version", "source"))
+                and Path(inherited["root"]).is_absolute()):
+            env.resolved = inherited
+        else:
+            env.resolved = boot.resolve(chosen)
+        if record_last and Path(env.resolved["root"]).resolve() == ROOT:
+            # A concurrent selection change must not be replaced by this old execution.
+            current, latest_hash = boot.read_selection(env.home)
+            if latest_hash == signature:
+                current["last"] = {"root": env.resolved["root"], "version": env.resolved["version"], "at": iso(env.clock())}
+                try:
+                    write_json(env.home / "package.json", current)
+                except OSError as exc:
+                    # The last-run record is a secondary defense; failing to write it must not stop the command.
+                    env.out(f"경고: last 기록 실패 ({env.home / 'package.json'}): {exc}")
+    except boot.BootError as exc:
+        env.package_error = exc
+
+
+def package_line(env):
+    actual_version = read_json(REGISTRY_PATH).get("version", "(없음)")
+    return f"패키지: {boot.describe(env.selected or {})} 실행 버전 {actual_version} 실행 루트 {ROOT}"
+
+
+def check_wrapper(env):
+    for name in ("relay-dispatch.cmd", "relay-dispatch"):
+        wrapper = env.home / "bin" / name
+        if wrapper.exists() and "relay_dispatch.py" in wrapper.read_text(encoding="utf-8"):
+            env.out(f"래퍼 이전 필요: install-shim ({wrapper})")
+    copied = env.home / "bin/relay_dispatch_boot.py"
+    if not copied.exists():
+        env.out("부트스트랩 없음: install-shim")
+    elif copied.read_bytes() != (ROOT / "dispatcher/boot.py").read_bytes():
+        env.out("부트스트랩 갱신 가능: install-shim")
+    if env.package_error:
+        env.out(f"경고: {env.package_error}")
+    elif env.resolved and Path(env.resolved["root"]).resolve() != ROOT:
+        env.out(f"경고: 선택 루트 {env.resolved['root']} != 실행 루트 {ROOT}; last는 유지한다")
 
 
 def cmd_run(args, env):
@@ -101,7 +144,7 @@ def cmd_run(args, env):
     config = live.value
     if not config["repos"]:
         env.out("감시할 저장소가 없다. `relay-dispatch repo add <clone-path>` 먼저 실행하라.")
-    check_shim(env)
+    check_wrapper(env)
     hosts = [found["host"] for _, found, _ in registered(env, config) if found] or ["github.com"]
     login = env.remote_for({"slug": "", "host": hosts[0]}).viewer()
     with env.ledger.locked(timeout=COMMAND_WAIT):
@@ -109,6 +152,7 @@ def cmd_run(args, env):
         env.ledger.save()
     ctx = context(env, config)
     ctx.login = login
+    ctx.log.line(package_line(env))
     ctx.log.line(f"relay-dispatch 시작: 로그인 {login}, 저장소 {len(config['repos'])}개, launcher {config['launcher']}, "
                  f"host {config['host']}, poll {config['poll_seconds']}s, 설정 {live.file}")
     live.mtime = None  # let the loop announce the applied configuration once
@@ -133,6 +177,7 @@ def elapsed_text(started, now):
 
 
 def cmd_status(args, env):
+    check_wrapper(env)
     config = configuration.read(env.registry)
     env.ledger.load()
     data, now = env.ledger.data, env.clock()
@@ -267,20 +312,98 @@ def cmd_repo(args, env):
 
 
 def cmd_install_shim(args, env):
+    explicit = args.host is not None or args.path is not None
+    if args.plugin and not args.host:
+        raise RelayError("input", "--plugin은 --host와 함께 사용하라")
+    if explicit:
+        chosen = new_selection(args)
+        resolved = boot.resolve(chosen)
+    elif (env.home / "package.json").exists():
+        if env.package_error:
+            raise env.package_error
+        chosen, resolved = env.selected, env.resolved
+    else:
+        chosen = infer_selection()
+        resolved = boot.resolve(chosen)
+        if Path(resolved["root"]).resolve() != ROOT:
+            raise RelayError("input", "설치 기록이 실행 루트와 다르다. --host 또는 --path를 지정하라")
+    if explicit or not (env.home / "package.json").exists():
+        write_json(env.home / "package.json", chosen)
     bin_dir = env.home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     for name, template in (("relay-dispatch.cmd", CMD_WRAPPER), ("relay-dispatch", SH_WRAPPER)):
         target = bin_dir / name
         if target.exists():
             env.out(f"기존 {target}:\n" + target.read_text(encoding="utf-8").rstrip())
-        target.write_text(template.format(entry=ENTRY), encoding="utf-8", newline="")
+        target.write_text(template, encoding="utf-8", newline="")
         env.out(f"작성: {target}")
+    target = bin_dir / "relay_dispatch_boot.py"
+    if target.exists():
+        env.out(f"기존 {target}:\n" + target.read_text(encoding="utf-8").rstrip())
+    target.write_bytes((ROOT / "dispatcher/boot.py").read_bytes())
+    env.out(f"작성: {target}")
     try:
         (bin_dir / "relay-dispatch").chmod(0o755)
     except OSError:
         pass
+    env.out(f"실행 패키지: {boot.describe(chosen)} {resolved['version']} ({resolved['root']})")
     env.out(f"PATH에 {bin_dir} 를 추가하라. PowerShell: [Environment]::SetEnvironmentVariable('Path', \"$env:Path;{bin_dir}\", 'User')  "
             f"sh: export PATH=\"$PATH:{bin_dir}\"")
+    return 0
+
+
+def new_selection(args):
+    if args.path is not None:
+        if args.plugin:
+            raise RelayError("input", "--plugin은 호스트 선택에서만 사용하라")
+        return boot.validate({"schema": 1, "mode": "pinned", "root": str(Path(args.path).resolve())})
+    if args.host is None:
+        raise RelayError("input", "claude/codex 또는 --path를 지정하라")
+    return boot.validate({"schema": 1, "mode": "host", "host": args.host, "plugin": args.plugin or "relay@relay"})
+
+
+def infer_selection():
+    candidates = []
+    file = boot.host_home("claude", os.environ) / "plugins/installed_plugins.json"
+    if file.exists():
+        record = boot.read_record(file)
+        if record.get("version") != 2 or not isinstance(record.get("plugins"), dict):
+            raise RelayError("input", "Claude 기록을 확인할 수 없다. --host 또는 --path를 지정하라")
+        for key, entries in record["plugins"].items():
+            if key.startswith("relay@") and isinstance(entries, list) and any(
+                    isinstance(e, dict) and e.get("scope") == "user" and isinstance(e.get("installPath"), str)
+                    and Path(e["installPath"]).resolve() == ROOT for e in entries):
+                candidates.append({"schema": 1, "mode": "host", "host": "claude", "plugin": key})
+    cache = boot.host_home("codex", os.environ) / "plugins/cache"
+    if ROOT.is_relative_to(cache) and len(ROOT.relative_to(cache).parts) == 3:
+        marketplace, name, _ = ROOT.relative_to(cache).parts
+        candidates.append({"schema": 1, "mode": "host", "host": "codex", "plugin": f"{name}@{marketplace}"})
+    if len(candidates) != 1:
+        raise RelayError("input", "실행 패키지 선택을 유도할 수 없다. --host 또는 --path를 지정하라")
+    return candidates[0]
+
+
+def cmd_package(args, env):
+    if args.action == "use":
+        chosen = new_selection(args)
+        resolved = boot.resolve(chosen)
+        write_json(env.home / "package.json", chosen)
+        env.out(f"실행 패키지: {boot.describe(chosen)} {resolved['version']} ({resolved['root']})")
+        env.out("다음 실행부터 적용, 실행 중인 run은 재시작")
+        return 0
+    env.out(f"선택: {boot.describe(env.selected or {})}")
+    env.out(f"실행 루트: {ROOT}\nrelay_core 루트: {Path(relay_core.__file__).resolve().parent}")
+    check_wrapper(env)
+    if env.package_error:
+        return 1
+    resolved = env.resolved
+    env.out(f"기록: {resolved['source']}\n찾은 루트: {resolved['root']}\n버전: {resolved['version']}")
+    env.out(f"enabled: {resolved['enabled']}" if resolved.get("enabled") is not None else "활성화 여부 미확인")
+    last = env.selected.get("last")
+    env.out(f"마지막 실행: {json.dumps(last, ensure_ascii=False)}")
+    if env.selected["mode"] == "host" and (boot.version_tuple(resolved["version"]) is None
+            or (last and boot.version_tuple(last["version"]) is None)):
+        env.out("하향 버전 비교 불가")
     return 0
 
 
@@ -304,23 +427,47 @@ def parser():
     repo_sub.add_parser("add").add_argument("path")
     repo_sub.add_parser("rm").add_argument("path", help="clone path or owner/repo")
     repo_sub.add_parser("list")
-    sub.add_parser("install-shim", help="write relay-dispatch wrappers under RELAY_DISPATCH_HOME/bin")
+    shim = sub.add_parser("install-shim", help="write relay-dispatch wrappers under RELAY_DISPATCH_HOME/bin")
+    choice = shim.add_mutually_exclusive_group()
+    choice.add_argument("--host", choices=("claude", "codex"))
+    choice.add_argument("--path")
+    shim.add_argument("--plugin")
+    package = sub.add_parser("package", help="show or choose the execution package")
+    package_sub = package.add_subparsers(dest="action", required=True)
+    package_sub.add_parser("show")
+    use = package_sub.add_parser("use")
+    choice = use.add_mutually_exclusive_group(required=True)
+    choice.add_argument("host", nargs="?", choices=("claude", "codex"))
+    choice.add_argument("--path")
+    use.add_argument("--plugin")
     return top
 
 
 COMMANDS = {"run": cmd_run, "status": cmd_status, "go": cmd_go, "pause": cmd_pause, "resume": cmd_pause,
-            "watch": cmd_watch, "unwatch": cmd_watch, "repo": cmd_repo, "install-shim": cmd_install_shim}
+            "watch": cmd_watch, "unwatch": cmd_watch, "repo": cmd_repo, "install-shim": cmd_install_shim, "package": cmd_package}
 
 
 def main(argv=None, *, out=None, cwd=None, remote_for=None, launcher_for=None, clock=None, registry=None,
          stdin_interactive=None):
     args = parser().parse_args(argv)
-    env = Env(out=out or (lambda text: print(text, flush=True)), cwd=cwd or Path.cwd(),
+    output = out or (lambda text: print(text, flush=True))
+    try:
+        if not Path(relay_core.__file__).resolve().is_relative_to(ROOT / "scripts"):
+            raise RelayError("run", f"relay_core가 다른 패키지에서 로드되었다: {relay_core.__file__}; 실행 루트 {ROOT}")
+        env = Env(out=output, cwd=cwd or Path.cwd(),
               registry=registry or read_json(REGISTRY_PATH)["skills"], remote_for=remote_for or github_for,
               launcher_for=launcher_for or launchers.Launcher, clock=clock or utc_now,
               stdin_interactive=sys.stdin.isatty() if stdin_interactive is None else stdin_interactive)
-    try:
+        changing = args.command == "install-shim" or (args.command == "package" and args.action == "use")
+        if changing and (getattr(args, "host", None) or getattr(args, "path", None)):
+            env.selected, env.resolved, env.package_error = None, None, None
+        else:
+            start_package(env, record_last=not changing)
         return COMMANDS[args.command](args, env)
     except RelayError as exc:
-        env.out(f"오류 ({exc.code}): {exc}")
+        output(f"오류 ({exc.code}): {exc}")
+        return 1
+    except boot.BootError as exc:
+        # Package lookup failures from install-shim/package use; other exceptions keep their traceback.
+        output(f"오류: {exc}")
         return 1
