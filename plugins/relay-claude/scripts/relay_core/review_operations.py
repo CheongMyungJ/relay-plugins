@@ -104,6 +104,10 @@ def publish(store, request, gh, before_each):
     for unit in units:
         if unit["status"] == "recorded":
             continue
+        status, suggestion = steps.read(unit["body"], unit["marker"])
+        if status != steps.RECORDED:
+            raise RelayError("approval", "Legacy posting unit; prepare and review a new candidate.")
+        steps.require_allowed("review", suggestion)
         before_each(units)
         if gh.viewer() != unit["author"]:
             raise RelayError("conflict", "Authenticated author changed.")

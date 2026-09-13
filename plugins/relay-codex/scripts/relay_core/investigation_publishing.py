@@ -69,6 +69,9 @@ def prepare(store, state, data, gh):
     if "next_step" not in data:
         raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
     suggestion = steps.validate(data["next_step"])
+    if run["outcome"] in ("held", "no_change") and suggestion["next"] is not None:
+        raise RelayError("input", "A held or unchanged investigation records next null and waits for the person.")
+    suggestion = steps.normalize("investigate", suggestion)
     if suggestion != run["conclusion"]["next_step"]:
         raise RelayError("input", "Candidate next_step differs from the conclusion; correct the conclusion first.")
     path = directory(store, run["investigation_id"])
@@ -133,6 +136,7 @@ def publish(store, state, data, gh):
             raise RelayError("conflict", "Investigation was published after preparation.")
         if current and digest(current["body"]) != candidate["expected"]:
             raise RelayError("conflict", "Remote investigation changed after review.")
+        steps.require_allowed("investigate", candidate["next_step"])
         write_json(path / "authorization.json", {k: data[k] for k in ("request_id", "hash", "approved", "user")})
         run["publication"] = "uncertain"
         save(store, state, run)

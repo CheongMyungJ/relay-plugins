@@ -1,5 +1,6 @@
 """One state file per user, written atomically under an exclusive lock file."""
 import datetime
+import copy
 import json
 import os
 import socket
@@ -51,6 +52,14 @@ def item_key(slug, number):
 
 def artifact_key(slug, target, digest):
     return f"{slug}#{target}@{digest}"
+
+
+def model_fields(entry):
+    """Read old records without inventing provenance or migrating the stored ledger."""
+    fields = {"model": entry.get("model")}
+    if "selection" in entry:
+        fields["selection"] = copy.deepcopy(entry["selection"])
+    return fields
 
 
 class Ledger:

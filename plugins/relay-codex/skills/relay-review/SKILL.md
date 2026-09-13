@@ -23,4 +23,4 @@ Show exact rendered result bodies after application, then continue the same deci
 
 Finish with PR/source URLs, baseline and applied SHAs, actual tests, posted unit URLs, excluded/deferred/unresolved items, the `watch` result when requested, and failures. Execution completion does not imply every finding is resolved.
 
-Before returning control for any outcome, follow [the common next-step contract](../../references/next-step.md): submit one `next_step` naming a registered skill or explicit null with a one-line reason, chosen from current evidence. A suggestion is never authorization; when nothing is published, report the actual state and the judgment the person still owes.
+Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.

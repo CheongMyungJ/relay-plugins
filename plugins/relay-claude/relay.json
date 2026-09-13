@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "skills": {
     "open": {"claude":"open","codex":"relay-open","issue":"forbidden","options":{"watch":"flag","lang":"value"},"requires":[],"artifact":"issue","targets":["repository"]},
     "intent": {"claude":"intent","codex":"relay-intent","issue":"required","options":{"watch":"flag","lang":"value"},"requires":[],"artifact":"intent","targets":["issue"]},

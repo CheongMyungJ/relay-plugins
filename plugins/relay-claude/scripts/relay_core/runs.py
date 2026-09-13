@@ -7,6 +7,15 @@ from .state import write_json
 from .publishing import snapshot
 
 
+HOLD_CONDITIONS = {
+    "checks": "필수 검증 실패·미실행·무효화",
+    "user_or_permission": "사용자 보류 지시·실행 환경 권한 제한",
+    "scope": "승인 범위 이탈",
+    "basis": "기준 문서 변경·누락·stale",
+    "git": "Git 충돌·금지된 Git 작업",
+}
+
+
 def begin(store, state, data, gh, registry):
     if state["stage"] != "implement" or not data.get("execution_authorized"):
         raise RelayError("run", "An explicit implementation request is required.")
@@ -44,7 +53,7 @@ def begin(store, state, data, gh, registry):
     run = {"run_id": run_id, "status": "planned", "parents": basis["parents"],
            "basis": basis, "basis_summary": summary, "basis_next_step": suggestion,
            "branch": branch, "base": base, "base_sha": sha,
-           "path": str(path), "repository": state["repository"]["repo"], "drift": [], "tests": []}
+           "path": str(path), "repository": state["repository"]["repo"], "drift": [], "tests": [], "holds": []}
     if basis["kind"] == "formal":
         run["plan_summary"] = summary
     runs[run_id] = run
@@ -122,6 +131,14 @@ def checkpoint(store, state, data, gh, registry):
         run["drift"].append(dict(entry, decision=entry.get("decision", "사람 판단 전")))
     elif action == "failure":
         run["failure"] = data["reason"]
+    elif action == "hold":
+        entry = data.get("entry")
+        if (not isinstance(entry, dict)
+                or not all(isinstance(entry.get(key), str) and entry[key].strip()
+                           for key in ("condition", "detail", "evidence"))
+                or entry["condition"] not in HOLD_CONDITIONS):
+            raise RelayError("run", "Hold requires a known condition and nonempty detail/evidence strings.")
+        run.setdefault("holds", []).append({key: entry[key] for key in ("condition", "detail", "evidence")})
     else:
         _, _, records, _ = snapshot(state, gh)
         baselines.current(basis, baselines.from_records(records))

@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from relay_core import RelayError
+from relay_core import RelayError, next_step as steps
 from .config import option_value
 
 # Adding a host is one entry: how a skill is addressed, and which registry key names it.
@@ -11,6 +11,7 @@ HOSTS = {"claude": {"prefix": "/relay:", "name": "claude"},
          "opencode": {"prefix": "/", "name": "opencode", "fallback": "codex"}}
 
 AUTO, GATE, IGNORE, DONE = "auto", "gate", "ignore", "done"
+BLOCKED = "blocked"
 
 
 def skill_name(registry, host, stage):
@@ -62,11 +63,9 @@ def decide(next_stage, artifact_stage, session, settings, paused):
     Returns (action, reason). GATE reasons name why a person decides instead.
     """
     if next_stage is None:
-        return DONE, "next 없음"
-    if next_stage == "open":
-        return IGNORE, "open은 이슈 번호를 받지 않음"
-    if next_stage == artifact_stage:
-        return GATE, "자기 재추천"
+        return DONE, "명시적 next 없음: 자동 진행 종료"
+    if not steps.allowed(artifact_stage, next_stage):
+        return BLOCKED, steps.blocked_reason(artifact_stage, next_stage)
     if session:
         return GATE, "열린 세션 있음"
     if next_stage in settings["gated"]:

@@ -14,29 +14,31 @@ from relay_core import RelayError
 PERMISSION_OPTIONS = {"claude": "--dangerously-skip-permissions", "codex": "--dangerously-bypass-approvals-and-sandbox"}
 
 
-def session_argv(host, prompt, name, session_id, claude_options=("--session-id", "--name")):
+def session_argv(host, prompt, name, session_id, claude_options=("--session-id", "--name"), *, model=None):
+    model_args = [] if model is None else ["--model", model]
     if host == "claude":
         argv = ["claude", PERMISSION_OPTIONS["claude"]]
         if "--session-id" in claude_options:
             argv += ["--session-id", session_id]
         if "--name" in claude_options:
             argv += ["--name", name]
-        return argv + [prompt]
+        return argv + model_args + [prompt]
     if host == "codex":
-        return ["codex", PERMISSION_OPTIONS["codex"], prompt]
+        return ["codex", PERMISSION_OPTIONS["codex"]] + model_args + [prompt]
     if host == "opencode":
-        return ["opencode", "--prompt", prompt]
+        return ["opencode"] + model_args + ["--prompt", prompt]
     raise RelayError("input", "unknown host: " + str(host))
 
 
-def resume_argv(host, session_id):
+def resume_argv(host, session_id, *, model=None):
     """How to reopen a recorded session with the same permission policy; Codex and opencode choose from their own pickers."""
+    model_args = [] if model is None else ["--model", model]
     if host == "claude":
-        return ["claude", PERMISSION_OPTIONS["claude"], "--resume", session_id]
+        return ["claude", PERMISSION_OPTIONS["claude"], "--resume", session_id] + model_args
     if host == "codex":
-        return ["codex", "resume", PERMISSION_OPTIONS["codex"]]
+        return ["codex", "resume", PERMISSION_OPTIONS["codex"]] + model_args
     if host == "opencode":
-        return ["opencode"]
+        return ["opencode"] + model_args
     raise RelayError("input", "unknown host: " + str(host))
 
 
@@ -108,6 +110,11 @@ class Launcher:
 
     def backend_argv(self, name, cwd, argv):
         return wt_argv(name, cwd, argv, self.powershell()) if self.kind == "wt" else tmux_argv(name, cwd, argv)
+
+    def session_argv(self, entry, session_id="<session-id>"):
+        options = self.claude_support() if entry["host"] == "claude" else ()
+        return session_argv(entry["host"], entry["prompt"], entry["name"], session_id,
+                            options, model=entry.get("model"))
 
     def launch(self, cwd, argv, name, session_id):
         record = {"cwd": str(cwd), "argv": list(argv), "session_id": session_id, "name": name}

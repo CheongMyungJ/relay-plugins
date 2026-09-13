@@ -229,7 +229,7 @@ def prepare_request(data, repo, gh, store, registry):
     steps.reserved(body)
     if "next_step" not in data:
         raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
-    suggestion = steps.validate(data["next_step"])
+    suggestion = steps.normalize("pr", data["next_step"])
     constraints = {key: data.get(key, False) for key in ("no_push", "draft_only")}
     draft = data.get("draft", False)
     if type(draft) is not bool or any(type(v) is not bool for v in constraints.values()):
@@ -354,6 +354,7 @@ def create_request(data, repo, gh, store):
     found = existing(gh, repo, request["head"], request["base"])
     if found:
         return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")), gh)
+    steps.require_allowed("pr", request["next_step"])
     if request["status"] == "pushing":
         actual = gitrepo.remote_tip(repo, request["head"])
         if actual == request["head_sha"]:
@@ -402,6 +403,7 @@ def update_request(data, repo, gh, store):
             raise RelayError("conflict", "Selected request belongs to another operation or PR.")
         if old["status"] in UNCERTAIN or old["status"] == "recorded":
             return recover(store, old, gh)
+        steps.require_allowed("pr", old["next_step"])
     pull = gh.pull(data["number"])
     if not matching(pull, repo, pull["head"]["ref"], pull["base"]["ref"]):
         raise RelayError("repository", "Only same-repository PR updates are supported.")
@@ -413,7 +415,7 @@ def update_request(data, repo, gh, store):
         raise RelayError("conflict", "Preserve existing request markers in the complete replacement.")
     if "next_step" not in data:
         raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
-    suggestion = steps.validate(data["next_step"])
+    suggestion = steps.normalize("pr", data["next_step"])
     # A complete replacement starts from the live body, which already carries the
     # previously generated block. Rebuild and cut exactly that instead of asking the
     # host to edit the generated region by hand, then keep the new suggestion

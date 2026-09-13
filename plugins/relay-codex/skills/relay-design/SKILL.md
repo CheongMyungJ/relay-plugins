@@ -13,6 +13,6 @@ Use [spec template](../../templates/spec.md) to combine requirements and design.
 
 Show the draft, accept feedback, and finalize in this session. After approval publish a spec comment. Return the verified URL and do not invoke plan automatically.
 
-Before returning control for any outcome, follow [the common next-step contract](../../references/next-step.md): submit one `next_step` naming a registered skill or explicit null with a one-line reason, chosen from current evidence. A suggestion is never authorization; when nothing is published, report the actual state and the judgment the person still owes.
+Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
 
 When published investigation evidence is relevant, cite and freeze it as described in [investigation evidence](../../references/investigation.md); unpublished local material remains explicitly local/unapproved.

@@ -25,4 +25,4 @@ Explicitly rejected updates can be retried with the same request ID after resolv
 
 Finish with the verified PR URL, source → target, actual open/closed/merged/draft state, the `watch` result when requested, and unresolved failures or SHA changes. Code edits, commits, branch rewriting, force/default-branch pushes, forks, merge/auto-merge, deployment and automatic next-stage invocation are outside this skill.
 
-Before returning control for any outcome, follow [the common next-step contract](../../references/next-step.md): submit one `next_step` naming a registered skill or explicit null with a one-line reason, chosen from current evidence. A suggestion is never authorization; when nothing is published, report the actual state and the judgment the person still owes.
+Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.

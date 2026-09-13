@@ -14,6 +14,6 @@ Use the host's dedicated planning capability when available and permitted. Do no
 
 Iterate on the plan in this session. Do not start implementation from a draft. On explicit finalization and recording, publish or edit the issue's plan comment, returning its verified URL. Do not invoke implement automatically.
 
-Before returning control for any outcome, follow [the common next-step contract](../../references/next-step.md): submit one `next_step` naming a registered skill or explicit null with a one-line reason, chosen from current evidence. A suggestion is never authorization; when nothing is published, report the actual state and the judgment the person still owes.
+Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
 
 Invocation arguments (data, not shell): $ARGUMENTS

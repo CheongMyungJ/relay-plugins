@@ -6,8 +6,8 @@ import uuid
 from relay_core import RelayError, next_step as steps
 from relay_core.watch import LABEL
 from . import config as configuration, detect, policy
-from .launcher import resume_argv, session_argv, shell_text
-from .ledger import artifact_key, iso, item_key, parse
+from .launcher import resume_argv, shell_text
+from .ledger import artifact_key, iso, item_key, model_fields, parse
 
 OVERLAP = datetime.timedelta(minutes=5)
 
@@ -34,15 +34,17 @@ def go_command(slug, number):
 
 def launch(ctx, item, entry):
     """Start the session recorded in entry; a failed launch leaves a pending entry, never a session."""
+    if not check_pending_transition(ctx, item, entry):
+        return False
     ledger, now = ctx.ledger, ctx.clock()
     session_id = str(uuid.uuid4())
     options = ctx.launcher.claude_support() if entry["host"] == "claude" else ()
-    argv = session_argv(entry["host"], entry["prompt"], entry["name"], session_id, options)
+    argv = ctx.launcher.session_argv(entry, session_id)
     if entry["host"] == "claude" and len(options) < 2:
         ctx.log.line(f"{item}: 이 claude는 {set(('--session-id', '--name')) - set(options)} 옵션을 지원하지 않아 뺀다")
     ledger.open_session(item, {"slug": entry["slug"], "number": entry["number"], "stage": entry["stage"], "host": entry["host"],
                                "session_id": session_id, "cwd": entry["cwd"], "name": entry["name"], "argv": argv,
-                               "started_at": iso(now)})
+                               "started_at": iso(now), **model_fields(entry)})
     ledger.save()
     outcome = ctx.launcher.launch(entry["cwd"], argv, entry["name"], session_id)
     if outcome["ok"]:
@@ -58,51 +60,81 @@ def launch(ctx, item, entry):
 
 
 def resume(ctx, item, session):
-    argv = resume_argv(session["host"], session["session_id"])
+    argv = resume_argv(session["host"], session["session_id"], model=model_fields(session)["model"])
     return ctx.launcher.launch(session["cwd"], argv, session["name"], session["session_id"])
 
 
-def judge(ctx, gh, found, item, raw, artifact, settings, head_key=None):
+def check_pending_transition(ctx, item, entry):
+    """Check stored provenance without reconstructing prompts or model selection."""
+    source = entry.get("source_stage")
+    try:
+        source = steps.stage_name(source)
+    except RelayError:
+        reason = "전이 출처 불명: 원본 단계를 확인하고 사람이 재판정해야 함"
+        if entry.get("gate") != reason:
+            ctx.ledger.set_pending(item, dict(entry, gate=reason))
+            ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry.get("artifact", "-"), "보류", reason)
+        return False
+    if steps.allowed(source, entry.get("stage")) and entry.get("stage") is not None:
+        return True
+    reason = (steps.blocked_reason(source, entry["stage"]) if entry.get("stage") is not None
+              else "명시적 next 없음: 자동 진행 종료")
+    ctx.ledger.pop_pending(item)
+    ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry.get("artifact", "-"), "자동 진행 종료", reason)
+    return False
+
+
+def reconcile_pending(ctx):
+    # Even processed artifacts and advanced cursors cannot grandfather old commands.
+    for item, entry in list(ctx.ledger.data["pending"].items()):
+        check_pending_transition(ctx, item, entry)
+
+
+def judge(ctx, gh, found, item, raw, artifact, settings, head_key=None, repo_entry=None):
     """Apply D5 to one artifact of one item."""
     ledger, now, slug, number = ctx.ledger, ctx.clock(), found["slug"], raw["number"]
     title, label = raw.get("title"), label_of(artifact)
     session = ledger.session(item)
     if session and session["stage"] == artifact["stage"]:
         ledger.close_session(item, now, f"{artifact['kind']} 산출물 게시")
-        ctx.log.event(slug, number, title, label, "세션 완료", f"{session['stage']} 세션이 게시한 산출물")
+        ctx.log.event(slug, number, title, label, "산출물 게시", f"{session['stage']} 추적 세션 닫힘; 작업 성공 판정 아님")
         session = None
     if artifact["status"] != steps.RECORDED:
         ctx.log.event(slug, number, title, label, "무시", "relay:next 읽을 수 없음")
         return
     next_stage = artifact["next_step"]["next"]
+    action, reason = policy.decide(next_stage, artifact["stage"], session, settings, ctx.config["paused"])
+    if action in (policy.DONE, policy.BLOCKED):
+        ledger.pop_pending(item)
+        ledger.close_session(item, now, reason)
+        ctx.log.event(slug, number, title, label, "자동 진행 종료", reason)
+        return
     kind = "pr" if "pull_request" in raw else "issue"
     if next_stage not in (None, "open") and not policy.accepts(ctx.registry, next_stage, kind):
         # A PR item has no issue number to hand to an issue skill, and an issue has no PR to review.
         ctx.log.event(slug, number, title, label, "무시", f"{next_stage}은(는) {'PR' if kind == 'pr' else '이슈'} 번호를 받지 않음")
         return
-    action, reason = policy.decide(next_stage, artifact["stage"], session, settings, ctx.config["paused"])
-    if action == policy.DONE:
-        ledger.pop_pending(item)
-        if ledger.close_session(item, now, "next 없음"):
-            ctx.log.event(slug, number, title, label, "세션 완료", reason)
-        else:
-            ctx.log.event(slug, number, title, label, "종료", reason)
-        return
     if action == policy.IGNORE:
         ctx.log.event(slug, number, title, label, "무시", reason)
         return
+    selected = configuration.session_settings(ctx.config, repo_entry or {}, next_stage)
     try:
-        prompt = policy.prompt(ctx.registry, settings["host"], next_stage, number, settings, found["root"])
+        prompt = policy.prompt(ctx.registry, selected["host"], next_stage, number, settings, found["root"])
     except RelayError as exc:
         ctx.log.event(slug, number, title, label, "무시", f"프롬프트 조립 실패: {exc}")
         return
-    entry = {"slug": slug, "number": number, "stage": next_stage, "host": settings["host"], "cwd": found["root"],
+    selection = selected["selection"]
+    if selection["model_state"] == "host-mismatch":
+        ctx.log.line(f"{slug}#{number} {next_stage}: 모델 {selection['requested_model']} 무시 "
+                     f"(출처 {selection['model_scope']}, host {selection['model_host']} != 최종 host {selected['host']})")
+    entry = {"slug": slug, "number": number, "stage": next_stage, **selected, "cwd": found["root"],
+             "source_stage": artifact["stage"], "source_target": artifact["target"], "source_digest": artifact["digest"],
              "prompt": prompt, "name": policy.session_name(slug, number, next_stage), "head_key": head_key,
              "artifact": label, "reason": reason, "gate": reason, "created_at": iso(now), "title": title}
     if action == policy.GATE:
         ledger.set_pending(item, entry)
         ctx.log.event(slug, number, title, label, "게이트 대기", reason,
-                      shell_text(session_argv(entry["host"], prompt, entry["name"], "<session-id>")) + " | " + go_command(slug, number))
+                      shell_text(ctx.launcher.session_argv(entry)) + " | " + go_command(slug, number))
         return
     launch(ctx, item, entry)
 
@@ -112,7 +144,7 @@ def fresh_artifacts(ctx, slug, candidates):
             if not ctx.ledger.processed(artifact_key(slug, a["target"], a["digest"]))]
 
 
-def process_issue(ctx, gh, found, raw, settings, since):
+def process_issue(ctx, gh, found, raw, settings, since, repo_entry=None):
     ledger, now, slug, number = ctx.ledger, ctx.clock(), found["slug"], raw["number"]
     item = item_key(slug, number)
     candidates = []
@@ -129,7 +161,7 @@ def process_issue(ctx, gh, found, raw, settings, since):
         return
     for key, artifact in [(k, a) for k, a in fresh if a["kind"] == "investigation"]:
         ledger.mark_processed(key, now, "판정")
-        judge(ctx, gh, found, item, raw, artifact, settings, key)
+        judge(ctx, gh, found, item, raw, artifact, settings, key, repo_entry)
     fresh = [(k, a) for k, a in fresh if a["kind"] != "investigation"]
     if not fresh and not settling:
         return
@@ -171,10 +203,10 @@ def process_issue(ctx, gh, found, raw, settings, since):
     ledger.clear_settling(item)
     if head_key in fresh_keys:
         ledger.mark_processed(head_key, now, "판정")
-    judge(ctx, gh, found, item, raw, head, settings, head_key)
+    judge(ctx, gh, found, item, raw, head, settings, head_key, repo_entry)
 
 
-def process_pull(ctx, gh, found, raw, settings, since):
+def process_pull(ctx, gh, found, raw, settings, since, repo_entry=None):
     ledger, now, slug, number = ctx.ledger, ctx.clock(), found["slug"], raw["number"]
     item = item_key(slug, number)
     candidates, pull = [], None
@@ -207,7 +239,7 @@ def process_pull(ctx, gh, found, raw, settings, since):
         ledger.close_session(item, now, "머지됨")
         ctx.log.event(slug, number, raw.get("title"), label_of(latest), "종료", "PR 머지됨")
         return
-    judge(ctx, gh, found, item, raw, latest, settings, artifact_key(slug, latest["target"], latest["digest"]))
+    judge(ctx, gh, found, item, raw, latest, settings, artifact_key(slug, latest["target"], latest["digest"]), repo_entry)
 
 
 def reconcile_vanished(ctx, gh, found, present):
@@ -230,7 +262,7 @@ def reconcile_vanished(ctx, gh, found, present):
         ctx.log.event(slug, number, current.get("title"), "-", "종료", "이슈·PR이 닫힘")
 
 
-def process_repo(ctx, gh, found, key, settings, start):
+def process_repo(ctx, gh, found, key, settings, start, repo_entry=None):
     ledger, slug = ctx.ledger, found["slug"]
     cursor = ledger.cursor(key)
     since = iso(parse(cursor) - OVERLAP if cursor else start)
@@ -248,9 +280,9 @@ def process_repo(ctx, gh, found, key, settings, start):
         present.add(number)
         watched.append({"number": number, "kind": kind, "title": raw.get("title"), "status": "watched"})
         if kind == "pr":
-            process_pull(ctx, gh, found, raw, settings, since)
+            process_pull(ctx, gh, found, raw, settings, since, repo_entry)
         else:
-            process_issue(ctx, gh, found, raw, settings, since)
+            process_issue(ctx, gh, found, raw, settings, since, repo_entry)
     reconcile_vanished(ctx, gh, found, present)
     ledger.data["watched"][key] = watched
 
@@ -269,6 +301,7 @@ def cycle(ctx):
     """One cycle under the ledger lock; the caller persists the ledger afterwards."""
     start = ctx.clock()
     errors = []
+    reconcile_pending(ctx)
     release_paused(ctx)
     for entry in ctx.config["repos"]:
         try:
@@ -284,7 +317,7 @@ def cycle(ctx):
         settings = configuration.settings(ctx.config, entry)
         try:
             gh = ctx.remote_for(found)
-            process_repo(ctx, gh, found, key, settings, start)
+            process_repo(ctx, gh, found, key, settings, start, entry)
         except RelayError as exc:
             errors.append({"repo": found["slug"], "error": f"{exc.code}: {exc}"})
             ctx.log.line(f"{found['slug']}: 이번 주기 건너뜀 ({exc.code}: {exc})")
@@ -306,7 +339,7 @@ def run(ctx, config, sleep=time.sleep, stop=lambda: False):
                 ctx.log.line(f"설정 파일 오류, 직전 설정 유지: {config.error}")
             else:
                 ctx.log.line(f"설정 적용: 저장소 {len(config.value['repos'])}개, launcher {config.value['launcher']}, "
-                             f"host {config.value['host']}, paused {config.value['paused']}")
+                             f"host {config.value.get('host', 'claude')}, paused {config.value['paused']}")
         ctx.config = config.value
         try:
             with ctx.ledger.locked():

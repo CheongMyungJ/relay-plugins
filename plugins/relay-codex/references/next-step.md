@@ -1,76 +1,98 @@
 # Common next-step contract
 
-Every published Relay artifact carries the next step inside itself. The two fields are part
-of the candidate the user approves.
+Use this contract when choosing and submitting a Relay artifact's next step. Follow the
+current skill's own contract for its execution, publication and recovery procedures.
 
-## The two fields
+## What to submit
+
+Submit exactly these two fields as `next_step`:
 
 ```json
 {"next":"design","reason":"확정된 작업 범위를 구체적인 설계로 정리한다."}
 ```
 
-`next` is one skill name registered in relay.json (open, intent, design, plan, brief,
-implement, pr, review, investigate) or JSON null. Host call prefixes are never stored.
-`reason` is one nonempty line of plain text explaining that choice. Nothing else belongs
-in the object: no issue or PR number, repository, target, argument, status, permission or
-reference. Displays render null as "없음", meaning there is no skill to suggest — it is not
-a status code for success, hold or resume. The readable lines stay Korean whatever the
-working language is.
+- `next`: a skill allowed from the current stage by the table below, or explicit null.
+- `reason`: one nonempty line of plain text explaining the choice, without surrounding whitespace.
 
-Choose the next step from current evidence, not from a fixed successor table. The same
-skill may be suggested again; that is not an instruction to retry automatically. No number
-or argument is stored, so resolve the actual target from the user's input and verified
-context at call time, and ask the person when it is unclear.
+Do not add fields for targets, arguments, status or permissions. Store skill names without
+host call prefixes; resolve target numbers and invocation arguments from the user's request
+and verified context when the next skill runs.
 
-## Where it lives and what protects it
+The displayed labels are always Korean: "다음 단계 / 사유", with null shown as "없음".
+Null ends automatic progress; it does not mean the task succeeded or every issue is resolved.
+A missing or malformed next is "unreadable", not null, and must not be silently treated as null.
 
-The helper renders the human-readable "다음 단계 / 사유" lines and the machine comment
-`<!-- relay:next {...} -->` from the same object. Hosts submit the object; they never write
-that pair into a draft, and a draft that already carries one at its anchor is rejected.
+## Choosing the next step
 
-A document, PR body or review comment may quote this syntax in ordinary prose; only the
-generated block at the anchor counts.
+Choose the next task assuming the candidate is successfully published. Waiting for approval
+to publish that candidate does not by itself require null. Every stage may choose null;
+non-null choices are limited to:
 
-| Publication path | Comment position and protection |
+| Current stage | Allowed next |
 | --- | --- |
-| Issue body, document comments, implementation report, investigation result | Inside the existing relay:begin/end region, before relay:metadata. It is part of the body hash that document parents and approvals already cover. |
-| PR body | At the end of the body, before the existing relay:pr-request marker, inside the existing request hash over the title, body and execution constraints. |
-| Review general comments and inline replies | At the end of each posting unit, before its relay:review marker, inside the candidate hash and each unit's exact body hash. |
+| open | intent, brief |
+| intent | design, brief |
+| design | plan, brief |
+| plan | implement |
+| brief | implement |
+| implement | pr |
+| pr | review |
+| review | null only |
+| investigate | intent, design, brief |
 
-Changing `next` or `reason` changes the candidate. Prepare again and obtain a new approval;
-an earlier approval or request hash never carries over. Review's allowed `{{commit}}` and
-`{{verification}}` substitutions apply to the drafted detail only, never to these fields.
+An allowed transition still needs sufficient current scope, evidence and verification.
+Missing prerequisites, self-recommendations, transitions outside the table and a user's
+instruction to hold or end follow-up require null. Explain remaining work or the needed
+human judgment in reason and keep the relevant detail in the body.
 
-An artifact published before this contract has no relay:next comment. That absence is
-"unreadable", which is distinct from `next` being null, and it never becomes null
-automatically. Its body hash and parent references are unchanged, so those documents remain
-usable; do not republish one merely to add metadata.
+- Review always uses null, in reviewer and author modes, with or without code application
+  or unresolved findings. Keep unresolved findings visible in the review.
+- A completed implementation may suggest pr after the required implementation, checks and
+  push are complete. A held implementation uses null.
+- A resolved investigation may suggest brief for a bounded fix, intent for a goal or scope
+  decision, or design when a current, sufficient approved intent exists. Assess the
+  investigation evidence's applicability to current code. Held/no_change results use null.
+- Intent/design may suggest brief when the scope is clear enough for the shorter path,
+  never to bypass unresolved questions.
+
+These judgments belong to the host. The helper's transition check does not establish that
+the evidence is sufficient, and the next skill still checks its own entry conditions.
+
+## Preparing the candidate
+
+Submit `next_step` explicitly. The helper generates the readable lines and the
+`<!-- relay:next {...} -->` machine comment; do not write that block into the draft yourself.
+Ordinary prose may quote the syntax, but only the helper-generated block at the artifact's
+anchor is its actual next step.
+
+Choose an allowed value initially. The helper normalizes a well-formed forbidden transition
+to null before freezing the candidate and preserves the submitted reason alongside the
+blocked transition. Malformed input remains an error. Held implementation and held/no_change
+investigation submissions must already use null; their non-null inputs are rejected before
+normalization. An investigation's submitted next must match its saved conclusion after the
+same policy check; see [investigation](investigation.md).
+
+Inspect the returned next and reason and show the complete rendered candidate. If either
+field changes, prepare again and apply the current skill's authorization rules to the revised
+candidate. Do not reuse an old candidate hash for changed content. Review result substitutions
+apply only to the detail body, never to next or reason; see [review](review.md).
 
 ## Suggestion is not authorization
 
-The next step assumes this publication succeeds. It grants nothing. Invoking the suggested
-skill still requires the user's explicit call, a document publication still requires exact
-candidate approval, and review changes still require the selected scope.
+Next adds no execution or publication authority. Follow the user's instructions and the
+current skill's approval and execution rules. Check whether existing authorization covers
+the revised scope; do not request the same approval again when it already covers the change.
 
-The conditions the recommendation depends on are checked where they were always checked, at
-the entry point of the skill that actually runs: current, non-stale document parents; the
-implementation's formal/brief basis and its required verification; the PR's real source,
-base and permissions; review's selected scope and its pre-publication recheck; and the
-current applicability of investigation evidence. If a next step does not hold up against
-current evidence, refuse the candidate or submit a different, evidence-supported choice.
-In particular, implementation → pr still requires that run's required checks to have
-actually passed, and investigation → design still requires a valid, sufficient intent.
+Manual calls and configured dispatcher launches follow their respective execution rules.
+The dispatcher applies the same transition policy before starting a suggested task; its
+settings do not replace the skill's own authorization requirements. See [dispatcher](../docs/dispatcher.md).
 
-## No publication, partial success, uncertainty
+If nothing is published, publication fails or only part completes, report the actual state,
+confirmed results and remaining decisions. Do not create an empty comment merely to record
+next, or append a failure notice to a comment that already succeeded.
 
-An approval wait, a hold, a cancellation, a failure, or a review that posts nothing may end
-with no published artifact at all. Report the current state and the judgment the person
-needs to make, and do not present an unpublished or failed result as an executable success.
-Never create an empty comment to record the exception, and never append a failure notice to
-a comment that already succeeded.
-
-When a write is uncertain or only part of a multi-unit publication succeeded, keep the
-original request, its authorization and the confirmed URLs, and separate them from what is
-unconfirmed. Reconcile that same original request; never repeat an unconfirmed POST and
-never change the next step to route around it. One visible review comment is not evidence
-that the whole selected scope completed.
+For uncertain writes, preserve the original request, authorization and confirmed URLs and
+follow the current skill's recovery procedure. Never repeat an unconfirmed POST or change
+next to bypass recovery. Do not rewrite historical artifacts merely to update their next
+metadata. A forbidden historical recommendation needs a new candidate before a new write;
+reconcile any earlier write with its original request first.

@@ -27,15 +27,24 @@ Resume open with the same stage/raw/cwd and explicit work_id, never with an issu
 prepare input:
 ```json
 {"body_file":"/absolute/draft.md","title":"New issue title","adopt":false,
- "next_step":{"next":"design","reason":"확정된 작업 범위를 구체적인 설계로 정리한다."}}
+ "next_step":{"next":"plan","reason":"확정된 설계를 실행 계획으로 정리한다."}}
 ```
-title and nonempty body are required for open (artifact issue). For an implementation report also include run_id. next_step is required on every prepare and is never supplied as an automatic null; see [next step](next-step.md). prepare reads upstream records, freezes version/parents/body and returns request_id, hash, review and diff paths. open includes the title and entire body in both files. Do not edit candidate.json. Modify the draft/title and prepare again if needed.
+title and nonempty body are required for open (artifact issue). For an implementation report also include run_id. next_step is required on every prepare; omission is never filled with null. Choose and inspect its returned value under the [common next-step contract](next-step.md). prepare reads upstream records, freezes version/parents/body and returns request_id, hash, review and diff paths. open includes the title and entire body in both files. Do not edit candidate.json. Modify the draft/title and prepare again if needed.
 
 Document publish authorization:
 ```json
 {"request_id":"returned-id","hash":"returned-hash","approved":true,"user":"actual approving user"}
 ```
-Implementation report authorization instead uses execution_authorized:true and run_id, with matching request_id/hash. This records an already requested execution and does not need repeated document approval.
+Completed implementation report authorization uses execution_authorized:true and run_id, with matching request_id/hash. Held reports additionally require approved:true and a nonempty user, recording the user's approval of the exact candidate:
+
+```json
+{"request_id":"returned-id","hash":"returned-hash","execution_authorized":true,"run_id":"registered-id"}
+{"request_id":"returned-id","hash":"returned-hash","execution_authorized":true,"run_id":"registered-id","approved":true,"user":"actual approving user"}
+```
+
+prepare classifies implementation candidates complete only for pushed status, an existing path matching verified_tree, and no failure; all others are held. holds is history and is not a completion criterion. A hold event accepts a known condition and nonempty string detail/evidence, makes no Git/GitHub queries and preserves other run facts. Successful verified/committed/pushed clears only failure and retains holds; there is no release action. candidate.json and pending freeze held, hold_summary={status,failure,holds,tree_matches}, and run_hash; the result includes held. Missing failure is null, missing holds is [], and missing path or comparison signature yields tree_matches=false. Held candidates use next=null and label 실행 기록 (보류); a non-null next is an input error before replacing candidate files or pending.
+
+Execution authority alone cannot publish a held candidate: publish returns approval with no write. A new write also requires unchanged run facts, otherwise run error “Execution facts changed after preparation; prepare the report again.” preserves pending. A local legacy candidate missing the new fields must be prepared again before a new write. Reconciliation of the same already successful request happens before that new-write check, including read-back and watch retries. Preserve the original authorization and request after an uncertain write; never change them to evade recovery. See [implementation](implementation.md) for the draft/feedback flow and how an existing user decision supplies this authorization.
 
 With `--watch` in the inspected invocation, publish marks the target after read-back and adds `watch` to its result: `{"requested":true,"applied":bool,"label":"relay:watch","assignee":login,"assignees":[...],"warning":str|null,"error":str|null}`. `applied:false` carries `error`; rerunning publish with the same authorization repeats no write and only retries the marking.
 

@@ -16,9 +16,9 @@ After showing the draft, request review, incorporate feedback in this session, a
 
 Prepare the final candidate and show review.md and change.diff before approval. Publish only the exact approved candidate. Existing authorization for that candidate needs no repeat question. The first publication creates brief v1 with parents={}. Preserve surrounding text. The issue body is never an approved basis and is never overwritten. A brief is independent of formal documents; links to them are reference material, not parents.
 
-Return the verified URL only after read-back. Brief approval does not authorize implementation. If the observed result supports implementation, recommend an explicit implement invocation with `--basis brief`; otherwise preserve the draft and choose the appropriate actual next action. No fixed successor or automatic execution is implied.
+Return the verified URL only after read-back. Brief approval does not authorize implementation.
 
-Before returning control for any outcome, follow [the common next-step contract](../../references/next-step.md): submit one `next_step` naming a registered skill or explicit null with a one-line reason, chosen from current evidence. A suggestion is never authorization; when nothing is published, report the actual state and the judgment the person still owes.
+Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
 
 When published investigation evidence is relevant, cite and freeze it as described in [investigation evidence](../../references/investigation.md); unpublished local material remains explicitly local/unapproved.
 

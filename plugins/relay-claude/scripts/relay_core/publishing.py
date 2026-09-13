@@ -1,6 +1,8 @@
 """Freeze, compare and publish. Ambiguous writes are never blindly replayed."""
+import copy
 import datetime
 import difflib
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -45,6 +47,24 @@ def review_text(frozen):
             if frozen["kind"] == "issue" else frozen["body"])
 
 
+def execution_hash(run):
+    return hashlib.sha256(json.dumps(run, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def execution_report_fields(run):
+    # Import locally: runs imports snapshot from this module.
+    from .runs import tree_signature
+    path = Path(run["path"]) if run.get("path") else None
+    tree_matches = bool(path and path.exists() and run.get("verified_tree")
+                        and tree_signature(path) == run["verified_tree"])
+    summary = {"status": run["status"], "failure": run.get("failure"),
+               "holds": copy.deepcopy(run.get("holds", [])), "tree_matches": tree_matches}
+    # Holds are history, not a release state. The host honors active user holds.
+    held = run["status"] != "pushed" or not tree_matches or bool(run.get("failure"))
+    return {"held": held, "hold_summary": summary, "run_hash": execution_hash(run)}
+
+
 def prepare(store, state, candidate, gh, registry):
     pending = state.get("pending")
     if pending and pending["status"] == "uncertain":
@@ -57,6 +77,7 @@ def prepare(store, state, candidate, gh, registry):
     if kind != "issue" and state["issue"] is None:
         raise RelayError("input", "Document publication requires an existing issue.")
     run_id = candidate.get("run_id")
+    report_fields = {}
     if kind == "implementation":
         run = state.get("runs", {}).get(run_id)
         if not run:
@@ -67,6 +88,7 @@ def prepare(store, state, candidate, gh, registry):
         known = state.get("implementation_targets", {}).get(run_id)
         if known and (not previous or previous["target"] != known):
             raise RelayError("conflict", "The known execution report is missing or replaced; reconcile its exact comment ID.")
+        report_fields = execution_report_fields(run)
     else:
         parents = parents_for(stage, registry, records)
         previous = records.get(kind)
@@ -85,6 +107,9 @@ def prepare(store, state, candidate, gh, registry):
     if "next_step" not in candidate:
         raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
     suggestion = steps.validate(candidate["next_step"])
+    if report_fields.get("held") and suggestion["next"] is not None:
+        raise RelayError("input", "A held implementation report requires next_step.next to be null.")
+    suggestion = steps.normalize(stage, suggestion)
     steps.reserved(body)
     request = uuid.uuid4().hex
     version = previous["meta"]["version"] + 1 if previous else 1
@@ -94,6 +119,8 @@ def prepare(store, state, candidate, gh, registry):
     if run_id:
         metadata["run_id"] = run_id
     label = "실행 기록" if run_id else "확정"
+    if report_fields.get("held"):
+        label += " (보류)"
     baseline = "\n".join(f"- {name}: {ref['target']} · v{ref['version']} · SHA-256 `{ref['hash']}`" for name, ref in parents.items())
     visible = body if kind == "issue" else f"{kind.title()} v{version} — {label}\n\n" + body
     if run_id:
@@ -113,7 +140,7 @@ def prepare(store, state, candidate, gh, registry):
     frozen = {"request_id": request, "body": rendered, "hash": approval_hash(kind, title, rendered), "body_hash": digest(rendered), "kind": kind,
               "title": title, "target": target, "expected": digest(old) if old else None,
               "parents": parents, "run_id": run_id, "status": "review", "version": version, "evidence_refs": evidence,
-              "next_step": suggestion}
+              "next_step": suggestion, **report_fields}
     write_json(store.path / "candidate.json", frozen)
     review = review_text(frozen)
     (store.path / "review.md").write_text(review, encoding="utf-8", newline="\n")
@@ -124,7 +151,8 @@ def prepare(store, state, candidate, gh, registry):
     state["status"] = "review"
     store.save(state)
     return {"request_id": request, "hash": frozen["hash"], "review": str(store.path / "review.md"),
-            "diff": str(store.path / "change.diff"), "version": version, "next_step": suggestion}
+            "diff": str(store.path / "change.diff"), "version": version, "next_step": suggestion,
+            **({"held": report_fields["held"]} if report_fields else {})}
 
 
 def matching_request(items, request, expected, title=None, *, issue_search=False):
@@ -153,6 +181,10 @@ def publish(store, state, authorization, gh, registry):
     if frozen["run_id"]:
         if authorization.get("run_id") != frozen["run_id"] or not authorization.get("execution_authorized"):
             raise RelayError("approval", "Implementation record must match the authorized execution.")
+        if frozen.get("held") and (authorization.get("approved") is not True
+                                   or not isinstance(authorization.get("user"), str)
+                                   or not authorization["user"].strip()):
+            raise RelayError("approval", "Explicit approval of this held implementation candidate is required.")
     elif authorization.get("approved") is not True or not authorization.get("user"):
         raise RelayError("approval", "Explicit document approval is required.")
     # Detect edits after review. Never publish from a newly edited file using old approval.
@@ -192,6 +224,13 @@ def publish(store, state, authorization, gh, registry):
             raise RelayError("conflict", "The remote document changed after preparation.")
         from .investigation import evidence_refs
         evidence_refs(state, frozen.get("evidence_refs", []), gh)
+        if frozen["run_id"]:
+            if not {"held", "hold_summary", "run_hash"} <= frozen.keys():
+                raise RelayError("run", "Legacy execution candidate; prepare the report again.")
+            run = state.get("runs", {}).get(frozen["run_id"])
+            if run is None or execution_hash(run) != frozen["run_hash"]:
+                raise RelayError("run", "Execution facts changed after preparation; prepare the report again.")
+        steps.require_allowed(frozen["kind"], frozen["next_step"])
         state["status"] = "publication_uncertain"
         frozen["status"] = "uncertain"
         state["authorization"] = {k: authorization[k] for k in ("user", "approved", "execution_authorized", "run_id", "hash", "request_id") if k in authorization}

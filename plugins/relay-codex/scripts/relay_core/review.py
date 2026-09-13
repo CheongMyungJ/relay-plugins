@@ -158,7 +158,7 @@ def prepare(store, request, data):
     steps.reserved(draft)
     if "next_step" not in data:
         raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
-    suggestion = steps.validate(data["next_step"])
+    suggestion = steps.normalize("review", data["next_step"])
     items = validate_items(request, data)
     units = validate_operations(request, data, items)
     scope = copy.deepcopy(data.get("code_scope", []))
@@ -313,6 +313,9 @@ def execute(store, request, data, repo, gh):
         mark_watch(request, gh)
         store.save(request)
         return result(store, request)
+    # Recovery above remains available for old requests; new effects need a current candidate.
+    if not execution_complete(request, units):
+        steps.require_allowed("review", candidate["next_step"])
     # Mixed units must be rejected before code, push, or any POST.
     for unit in candidate["operations"]:
         if set(unit["item_ids"]) & set(selected) and not set(unit["item_ids"]) <= set(selected):

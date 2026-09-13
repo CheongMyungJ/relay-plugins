@@ -13,7 +13,7 @@ from relay_core.github import GitHub
 from relay_core.state import read_json, write_json
 from . import boot, config as configuration, launcher as launchers, log as logs, loop
 from .ledger import Ledger, iso, item_key, parse
-from .launcher import resume_argv, resume_hint, shell_text
+from .launcher import resume_hint, shell_text
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "dispatcher" / "relay_dispatch.py"
@@ -154,7 +154,7 @@ def cmd_run(args, env):
     ctx.login = login
     ctx.log.line(package_line(env))
     ctx.log.line(f"relay-dispatch 시작: 로그인 {login}, 저장소 {len(config['repos'])}개, launcher {config['launcher']}, "
-                 f"host {config['host']}, poll {config['poll_seconds']}s, 설정 {live.file}")
+                 f"host {config.get('host', 'claude')}, poll {config['poll_seconds']}s, 설정 {live.file}")
     live.mtime = None  # let the loop announce the applied configuration once
     stop = (lambda: True) if args.once else (lambda: False)
     if args.once:
@@ -176,13 +176,32 @@ def elapsed_text(started, now):
     return f"{minutes // 60}시간 {minutes % 60}분" if minutes >= 60 else f"{minutes}분"
 
 
+def selection_text(entry):
+    model = entry.get("model")
+    text = f"host {entry['host']} model {model if model is not None else '호스트 기본(모델 옵션 없음)'}"
+    selection = entry.get("selection")
+    if selection:
+        text += f" [host 출처 {selection['host_scope']}, model 출처 {selection['model_scope'] or '-'}]"
+        if selection["model_state"] == "host-mismatch":
+            text += (f" 요청 모델 {selection['requested_model']} 무시: 출처 host {selection['model_host']}"
+                     f" != 최종 host {entry['host']}")
+        elif selection["model_state"] == "cleared":
+            text += " (null: 상속 해제)"
+    return text
+
+
 def cmd_status(args, env):
     check_wrapper(env)
     config = configuration.read(env.registry)
     env.ledger.load()
     data, now = env.ledger.data, env.clock()
     env.out(f"로그인: {data.get('login') or '(run을 아직 실행하지 않음)'}  설정: {configuration.path()}  paused: {config['paused']}")
-    env.out(f"launcher: {config['launcher']}  host: {config['host']}  poll: {config['poll_seconds']}s  auto: {', '.join(config['auto'])}  gated: {', '.join(config['gated']) or '-'}")
+    env.out(f"launcher: {config['launcher']}  host: {config.get('host', 'claude')}  poll: {config['poll_seconds']}s  auto: {', '.join(config['auto'])}  gated: {', '.join(config['gated']) or '-'}")
+    env.out("모델 표시는 디스패처가 전달하는 선택이며 호스트 내부 모델의 실시간 조회가 아니다.")
+    env.out("전역 기본: " + selection_text(configuration.session_settings(config, {}, None)))
+    for stage in sorted(config.get("skills", {})):
+        env.out(f"  전역 스킬 {stage}: " + selection_text(configuration.session_settings(config, {}, stage)))
+    launcher = env.launcher_for(config["launcher"], env.home)
     env.out("저장소:")
     for entry, found, error in registered(env, config):
         if error:
@@ -192,17 +211,20 @@ def cmd_status(args, env):
         settings = configuration.settings(config, entry)
         items = data["watched"].get(key, [])
         env.out(f"  {found['slug']} ({entry['path']}) host {settings['host']} gated {', '.join(settings['gated']) or '-'} 커서 {data['cursors'].get(key) or '(없음, 현재 시각부터)'}")
+        env.out("    레포 기본: " + selection_text(configuration.session_settings(config, entry, None)))
+        for stage in sorted(set(config.get("skills", {})) | set(entry.get("skills", {}))):
+            env.out(f"    스킬 {stage}: " + selection_text(configuration.session_settings(config, entry, stage)))
         for item in items:
             env.out(f"    #{item['number']} {item['kind']} {logs.clip(item.get('title'))!r} {item['status']}")
     sessions = env.ledger.open_sessions()
     env.out("열린 세션:" if sessions else "열린 세션: 없음")
     for item, session in sessions.items():
-        env.out(f"  {item} {session['stage']} ({session['host']}) 시작 후 {elapsed_text(session['started_at'], now)} "
+        env.out(f"  {item} {session['stage']} 저장 선택 ({selection_text(session)}) 시작 후 {elapsed_text(session['started_at'], now)} "
                 f"session {session['session_id']} | relay-dispatch go {item} --resume")
     env.out("게이트 대기:" if data["pending"] else "게이트 대기: 없음")
     for item, entry in data["pending"].items():
-        env.out(f"  {item} {entry['stage']} ({entry.get('gate')}) | relay-dispatch go {item}")
-        env.out(f"    {entry['prompt']}")
+        env.out(f"  {item} {entry['stage']} ({entry.get('gate')}) 저장 선택 ({selection_text(entry)}) | relay-dispatch go {item}")
+        env.out(f"    {shell_text(launcher.session_argv(entry))}")
     last = data.get("last_cycle")
     if last:
         env.out(f"마지막 주기: {last['at']} 감시 {last['watched']}개 오류 {len(last['errors'])}건")
@@ -246,8 +268,7 @@ def cmd_go(args, env):
             session = data["sessions"].get(item)
             if not session:
                 raise RelayError("input", f"{item} 에 기록된 세션이 없다.")
-            argv = resume_argv(session["host"], session["session_id"])
-            outcome = ctx.launcher.launch(session["cwd"], argv, session["name"], session["session_id"])
+            outcome = loop.resume(ctx, item, session)
             env.ledger.save()
             if not outcome["ok"]:
                 raise RelayError("run", "런처 실패: " + outcome["error"] + " | " + outcome["command"])

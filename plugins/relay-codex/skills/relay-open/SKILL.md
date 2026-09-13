@@ -13,6 +13,4 @@ Use the [issue template](../../templates/issue.md) for a concise title and reque
 
 Prepare and show review.md and change.diff, including the title and entire body, before final approval. Approval binds both title and body. After approval of this exact candidate and creation, publish once and return the verified issue URL. Do not repeat approval already given for the same candidate. Resume an open request using its explicit work_id, without adding an issue number to raw; once created, only reconcile that result. open never edits an existing issue.
 
-For detailed work definition, explain that the user can explicitly invoke intent with the returned issue number. The regular path is open → intent → design → plan → implement.
-
-Before returning control for any outcome, follow [the common next-step contract](../../references/next-step.md): submit one `next_step` naming a registered skill or explicit null with a one-line reason, chosen from current evidence. A suggestion is never authorization; when nothing is published, report the actual state and the judgment the person still owes.
+Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.

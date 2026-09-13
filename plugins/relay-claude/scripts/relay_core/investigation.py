@@ -296,10 +296,6 @@ def validate_result(run):
         for field in ("summary", "impact"):
             text(result.get(field), field)
         suggestion = steps.validate(result.get("next_step"))
-        # An investigation hands evidence to a document stage; it never becomes a
-        # basis for implementation or a PR prerequisite.
-        if suggestion["next"] not in (None, "brief", "intent", "design", "investigate"):
-            raise RelayError("input", "An investigation can only suggest brief, intent, design, investigate or null.")
         if outcome in ("held", "no_change") and suggestion["next"] is not None:
             raise RelayError("input", "A held or unchanged investigation records next null and waits for the person.")
         if outcome == "resolved":
@@ -368,6 +364,8 @@ def checkpoint(store, state, data, resume=False):
         if after["changes"]:
             validate_changes(store, after)
         validate_result(after)
+        if after["outcome"] is not None:
+            after["conclusion"]["next_step"] = steps.normalize("investigate", after["conclusion"]["next_step"])
         after["status"] = "held" if after["outcome"] == "held" else "concluded" if after["outcome"] else "investigating"
     after.update(revision=run["revision"] + 1, active_checkpoint=event_id, updated_at=now(), pending=None,
                  publication="recorded" if run["target"] else "none")

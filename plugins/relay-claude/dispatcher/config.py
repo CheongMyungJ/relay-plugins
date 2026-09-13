@@ -1,6 +1,7 @@
 """User configuration: validation, mtime-based rereads, per-repository overrides."""
 import copy
 import os
+import unicodedata
 from pathlib import Path
 
 from relay_core import RelayError, repository
@@ -9,10 +10,11 @@ from relay_core.state import read_json, write_json
 HOSTS = ("claude", "codex", "opencode")
 LAUNCHERS = ("wt", "tmux", "dry-run")
 DEFAULT_AUTO = ["intent", "design", "plan", "brief", "investigate", "implement", "pr", "review"]
-DEFAULTS = {"host": "claude", "poll_seconds": 30, "launcher": "wt", "paused": False,
+DEFAULTS = {"poll_seconds": 30, "launcher": "wt", "paused": False,
             "auto": DEFAULT_AUTO, "gated": [], "defaults": {"lang": "ko"},
             "worktree_template": "{parent}/{name}-wt-{issue}", "repos": []}
 OVERRIDES = ("host", "auto", "gated", "defaults", "worktree_template")
+SESSION_KEYS = {"host", "model", "skills"}
 PLACEHOLDERS = ("{parent}", "{name}", "{issue}")
 
 
@@ -42,6 +44,29 @@ def validate_stages(value, label, registry):
     return list(dict.fromkeys(value))
 
 
+def validate_session(scope, label, registry):
+    if "host" in scope and scope["host"] not in HOSTS:
+        raise RelayError("input", label + ".host must be one of " + ", ".join(HOSTS))
+    if "model" in scope and scope["model"] is not None:
+        value = scope["model"]
+        if (not isinstance(value, str) or not value or value.startswith("-")
+                or any(c.isspace() or c in "\"'" or unicodedata.category(c).startswith("C") for c in value)):
+            raise RelayError("input", label + ".model must be nonempty text without whitespace, quotes, control characters or a leading -")
+    if "skills" in scope:
+        if not isinstance(scope["skills"], dict):
+            raise RelayError("input", label + ".skills must be an object")
+        for stage, values in scope["skills"].items():
+            field = label + ".skills." + str(stage)
+            if stage not in registry:
+                raise RelayError("input", field + " is an unknown skill")
+            if not isinstance(values, dict):
+                raise RelayError("input", field + " must be an object")
+            extra = set(values) - {"host", "model"}
+            if extra:
+                raise RelayError("input", field + " has unknown keys: " + ", ".join(sorted(extra)))
+            validate_session(values, field, registry)
+
+
 def validate_scope(scope, label, registry, explicit=None):
     """Validate the fields shared by the top level and repository entries.
 
@@ -49,8 +74,7 @@ def validate_scope(scope, label, registry, explicit=None):
     gated is an error only when both were written, otherwise the gate simply wins.
     """
     explicit = scope if explicit is None else explicit
-    if "host" in scope and scope["host"] not in HOSTS:
-        raise RelayError("input", label + ".host must be one of " + ", ".join(HOSTS))
+    validate_session(scope, label, registry)
     for key in ("auto", "gated"):
         if key in scope:
             scope[key] = validate_stages(scope[key], label + "." + key, registry)
@@ -82,7 +106,7 @@ def validate(config, registry):
         raise RelayError("input", "config must be a JSON object")
     merged = copy.deepcopy(DEFAULTS)
     merged.update(copy.deepcopy(config))
-    unknown = set(merged) - set(DEFAULTS)
+    unknown = set(merged) - set(DEFAULTS) - SESSION_KEYS
     if unknown:
         raise RelayError("input", "unknown config keys: " + ", ".join(sorted(unknown)))
     if type(merged["poll_seconds"]) is not int or merged["poll_seconds"] < 10:
@@ -98,7 +122,7 @@ def validate(config, registry):
         label = f"repos[{index}]"
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"].strip():
             raise RelayError("input", label + " needs a path string")
-        extra = set(entry) - set(OVERRIDES) - {"path"}
+        extra = set(entry) - set(OVERRIDES) - SESSION_KEYS - {"path"}
         if extra:
             raise RelayError("input", label + " has unknown keys: " + ", ".join(sorted(extra)))
         validate_scope(entry, label, registry)
@@ -107,7 +131,8 @@ def validate(config, registry):
 
 def settings(config, entry):
     """Effective host/auto/gated/defaults/template for one repository entry."""
-    result = {key: copy.deepcopy(config[key]) for key in OVERRIDES}
+    result = {key: copy.deepcopy(config[key]) for key in OVERRIDES if key in config}
+    result.setdefault("host", "claude")
     for key in OVERRIDES:
         if key in entry:
             result[key] = copy.deepcopy(entry[key])
@@ -115,6 +140,28 @@ def settings(config, entry):
     result["auto"] = [s for s in result["auto"] if s not in result["gated"]]
     result["path"] = entry["path"]
     return result
+
+
+def session_settings(config, entry, stage):
+    """Select fields independently, retaining the model's host until the final comparison."""
+    host, model = "claude", None
+    selection = {"host_scope": "default", "model_scope": None, "requested_model": None,
+                 "model_host": None, "model_state": "unspecified"}
+    layers = (("global", config), ("repo", entry),
+              ("global-skill", config.get("skills", {}).get(stage, {})),
+              ("repo-skill", entry.get("skills", {}).get(stage, {})))
+    for scope, values in layers:
+        if "host" in values:
+            host = values["host"]
+            selection["host_scope"] = scope
+        if "model" in values:
+            model = values["model"]
+            selection.update(model_scope=scope, requested_model=model, model_host=host,
+                             model_state="cleared" if model is None else "selected")
+    if model is not None and selection["model_host"] != host:
+        model = None
+        selection["model_state"] = "host-mismatch"
+    return {"host": host, "model": model, "selection": selection}
 
 
 def identity(entry_path):

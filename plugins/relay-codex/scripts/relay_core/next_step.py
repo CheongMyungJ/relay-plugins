@@ -24,6 +24,54 @@ RECORDED, UNREADABLE = "recorded", "unreadable"
 
 REGISTERED = None
 
+# Runtime policy. The host-facing decision contract lives in references/next-step.md.
+TRANSITIONS = {
+    "open": frozenset(("intent", "brief")),
+    "intent": frozenset(("design", "brief")),
+    "design": frozenset(("plan", "brief")),
+    "plan": frozenset(("implement",)),
+    "brief": frozenset(("implement",)),
+    "implement": frozenset(("pr",)),
+    "pr": frozenset(("review",)),
+    "review": frozenset(),
+    "investigate": frozenset(("intent", "design", "brief")),
+}
+ARTIFACT_STAGES = {"issue": "open", "spec": "design", "implementation": "implement",
+                   "investigation": "investigate"}
+
+
+def stage_name(stage):
+    if not isinstance(stage, str):
+        raise RelayError("input", "A known source stage is required for transition policy.")
+    stage = ARTIFACT_STAGES.get(stage, stage)
+    if stage not in TRANSITIONS:
+        raise RelayError("input", "Unknown source stage: " + stage)
+    return stage
+
+
+def allowed(stage, choice):
+    stage = stage_name(stage)
+    return choice is None or (isinstance(choice, str) and choice in TRANSITIONS[stage])
+
+
+def blocked_reason(stage, choice):
+    return f"허용되지 않은 전이 {stage_name(stage)} → {choice}: 자동 진행 종료."
+
+
+def normalize(stage, value):
+    """Normalize new candidates only, after the caller's outcome-specific checks."""
+    value = validate(value)
+    if allowed(stage, value["next"]):
+        return value
+    return {"next": None, "reason": blocked_reason(stage, value["next"]) + " 제출 사유: " + value["reason"]}
+
+
+def require_allowed(stage, value):
+    """Guard a new write of frozen content; never rewrite an approved candidate."""
+    value = validate(value)
+    if not allowed(stage, value["next"]):
+        raise RelayError("approval", "Transition policy changed; preserve the original request and prepare, review and approve a new candidate.")
+
 
 def skills():
     global REGISTERED
