@@ -141,7 +141,7 @@ Codex에서는 `$relay-open --watch 검색 결과가 비어 있을 때 안내를
 relay-dispatch watch 13
 ```
 
-아홉 스킬 모두 `--watch`를 지원합니다. 예를 들어 `/relay:intent 13 --watch` 또는 `$relay-brief 13 --watch`는
+열한 스킬 모두 `--watch`를 지원합니다. 예를 들어 `/relay:intent 13 --watch` 또는 `$relay-brief 13 --watch`는
 산출물 게시 후 해당 이슈에 라벨과 호출자 assignee를 표시합니다. 표시 실패는 게시를 취소하지 않으며 결과의 `watch.error`로 안내합니다.
 
 저장소를 처음 등록하거나 기존 항목에 나중에 감시를 켜면 **과거 산출물을 자동 재실행하지 않습니다**.
@@ -178,6 +178,13 @@ relay-dispatch go 13
 | pr | review |
 | review | 없음 |
 | investigate | intent, design, brief |
+| kb | review (작은 KB PR을 만든 경우만) |
+| kb-sync | review |
+
+디스패처는 `kb`와 `kb-sync`를 자동으로 열지 않으므로 필요할 때 직접 호출하세요.
+`kb-sync --watch`가 끝나 draft PR을 ready로 바꾸면 그 PR의 review는 다른 PR과 같은 규칙으로 시작될 수 있습니다.
+예산에 닿아 일시정지된 `kb-sync`는 이어서 열리지 않으므로 새 세션에서 `--resume <run_id>`로 직접 이어갑니다.
+머지된 PR에서 `kb --pr`로 만든 작은 KB PR의 review도 직접 호출합니다.
 
 모든 단계에서 다음 단계가 `없음`(`null`)이면 자동 진행이 끝납니다. 이것이 작업 성공을 뜻하지는 않습니다.
 자기 단계 재추천과 표 밖의 전이도 실행하지 않으며 `go`용 대기로 남기지 않습니다.

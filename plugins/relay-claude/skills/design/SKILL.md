@@ -14,6 +14,8 @@ Use [spec template](../../templates/spec.md) to combine requirements and design.
 
 Show the draft, accept feedback, and finalize in this session. After approval publish a spec comment. Return the verified URL and do not invoke plan automatically.
 
+When the repository has a knowledge base, look up the paths and working terms of this work with the `kb` helper's lookup before drafting and cite the returned entries in the `## 참조한 KB 항목` section as the [knowledge base contract](../../references/kb.md) describes; without a KB the section is not required.
+
 Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
 
 When published investigation evidence is relevant, cite and freeze it as described in [investigation evidence](../../references/investigation.md); unpublished local material remains explicitly local/unapproved.

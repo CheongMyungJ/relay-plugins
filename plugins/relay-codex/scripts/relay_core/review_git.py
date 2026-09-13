@@ -32,6 +32,14 @@ def tip(root, url, ref):
                  if line.split()[1] == target), None)
 
 
+def changed_paths(root, base, head):
+    """Literal changed paths, including both sides of a rename, at the recorded commits."""
+    if not base:
+        raise RelayError("git", "The recorded merge base is missing; collect Git evidence before querying changed paths.")
+    raw = repo_git.git_raw(root, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", base, head, "--")
+    return sorted({path for path in raw.split("\0") if path})
+
+
 def evidence(repo, pull, run_id):
     root = repo["root"]
     result = {"complete": False, "missing": [], "merge_base": None}

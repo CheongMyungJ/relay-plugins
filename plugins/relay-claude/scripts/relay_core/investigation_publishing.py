@@ -81,6 +81,9 @@ def prepare(store, state, data, gh):
     if "Relay investigation recovery" in body or re.search(r"<[^>]*(?:placeholder|작성|제목)[^>]*>", body, re.I):
         raise RelayError("input", "Remove placeholders and generated recovery sections from the draft.")
     steps.reserved(body)
+    from .kb import reading
+    kb, kb_reader = reading.worktree_kb(state["repository"].get("root"))
+    reading.check_references(kb, kb_reader, body, "investigation")
     records = remote_records(state, gh)
     prior = records.get(run["investigation_id"])
     if run.get("target") and (not prior or prior["target"] != run["target"]):

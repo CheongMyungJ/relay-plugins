@@ -46,10 +46,32 @@ def select(data, parsed, repo, gh):
     return candidates[0]["number"], "unique open PR matching current source repository/branch", []
 
 
-def validate_items(request, data):
+def kb_at_head(repo, snapshot):
+    """The KB as the PR head carries it; (absent, None) when the head objects are not fetched."""
+    from .kb import reading, layout
+    try:
+        return reading.tree_kb(repo["root"], snapshot["pull"]["head"]["sha"])
+    except RelayError:
+        return layout.empty(), None
+
+
+def inspect_kb(repo, snapshot):
+    """The diff paths' entries and the active failure classes for a reviewer, bounded and paged."""
+    from .kb import reading, lookup
+    try:
+        kb, _ = kb_at_head(repo, snapshot)
+        head = snapshot["pull"]["head"]["sha"]
+        paths = review_git.changed_paths(repo["root"], (snapshot.get("code") or {}).get("merge_base"), head)
+        return lookup.summary(kb, paths=paths, sha=head), reading.failure_classes(kb, sha=head)
+    except RelayError as exc:
+        return {"error": exc.code + ": " + str(exc)}, None
+
+
+def validate_items(request, data, repo=None):
     items = copy.deepcopy(data.get("items"))
     if not isinstance(items, list):
         raise RelayError("input", "items must be a list.")
+    kb_state = None
     sources = {c["key"]: c for c in request["snapshot"]["comments"]}
     previous = {i["id"]: i for candidate in request.get("candidate_history", []) if candidate for i in candidate["items"]}
     previous.update({i["id"]: i for i in request.get("candidate", {}).get("items", [])})
@@ -63,6 +85,13 @@ def validate_items(request, data):
         seen.add(key)
         require_text(item.get("evidence"), "item evidence")
         require_text(item.get("resolution"), "resolution separate from original severity")
+        if "kb_refs" in item:
+            from .kb import reading
+            if kb_state is None:
+                if repo is None:
+                    raise RelayError("input", "kb_refs need the repository to read the PR head's KB.")
+                kb_state = kb_at_head(repo, request["snapshot"])
+            item["kb_refs"] = reading.validate_refs(kb_state[0], kb_state[1], item["kb_refs"])
         if request["mode"] == "reviewer":
             if item.get("severity") not in SEVERITIES:
                 raise RelayError("input", "Unknown severity; use blocking/major/minor/info.")
@@ -148,7 +177,7 @@ def validate_operations(request, data, items):
     return units
 
 
-def prepare(store, request, data):
+def prepare(store, request, data, repo=None):
     if request.get("decision") or any(u["status"] != "recorded" for u in posts.operations(store, request)):
         raise RelayError("conflict", "Execution already selected; resume its recorded stages before a new candidate.")
     if data.get("snapshot_hash") != request["snapshot"]["hash"]:
@@ -159,7 +188,7 @@ def prepare(store, request, data):
     if "next_step" not in data:
         raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
     suggestion = steps.normalize("review", data["next_step"])
-    items = validate_items(request, data)
+    items = validate_items(request, data, repo)
     units = validate_operations(request, data, items)
     scope = copy.deepcopy(data.get("code_scope", []))
     if not isinstance(scope, list):
@@ -389,7 +418,9 @@ def dispatch(data, registry, gh=None, repo=None):
                        "watch": bool(parsed["options"].get("watch"))}
             store.save(request)
             write_json(store.request_path(run_id) / "snapshot.json", snapshot)
-            return {"run_id": run_id, "work_path": str(store.request_path(run_id)), "mode": request["mode"], "snapshot": snapshot, "selection_reason": reason}
+            kb_summary, failures = inspect_kb(repo, snapshot)
+            return {"run_id": run_id, "work_path": str(store.request_path(run_id)), "mode": request["mode"], "snapshot": snapshot,
+                    "selection_reason": reason, "kb": kb_summary, "failure_classes": failures}
         request = store.load(data["run_id"])
         try:
             if action == "prepare":
@@ -400,7 +431,7 @@ def dispatch(data, registry, gh=None, repo=None):
                 current["hash"] = snapshots.comparison_hash(current)
                 if current["hash"] != request["snapshot"]["hash"]:
                     raise RelayError("stale", "Evidence changed; resume and reassess before preparing.")
-                return prepare(store, request, data)
+                return prepare(store, request, data, repo)
             if action == "execute":
                 # Re-entry after showing rendered results uses the same decision and hash.
                 if data.get("results_shown") is True and posts.operations(store, request) and request.get("application", {}).get("status") == "pushed":

@@ -16,7 +16,7 @@ After creating the worktree, run {"action":"prepared","run_id":"..."} from the o
 
 ## Code and verification
 
-Develop with the host's tools following repo instructions and approved plan. Record drift as discovered. The helper's run command records these events:
+Develop with the host's tools following repo instructions and approved plan. Before the first edit of a file the proof did not name, look up its path with the `kb` helper (see [kb](kb.md)); begin's `kb` field covers the proof's own paths and the verified/committed responses' `kb_recheck` field is a post-hoc check only. Record drift as discovered. The helper's run command records these events:
 
 - {"action":"drift","run_id":"...","entry":{"planned":"...","actual":"...","reason":"...","impact":"...","severity":"major","evidence":"..."}}
 - {"action":"verified","run_id":"...","tests":[{"command":"actual check","exit_code":0,"evidence":"actual output summary or local log path"}]}

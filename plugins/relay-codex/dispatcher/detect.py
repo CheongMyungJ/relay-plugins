@@ -9,9 +9,12 @@ from relay_core import RelayError, artifacts, next_step as steps
 from relay_core.artifacts import reference
 
 KIND_STAGE = {"issue": "open", "intent": "intent", "spec": "design", "plan": "plan", "brief": "brief",
-              "implementation": "implement", "investigation": "investigate", "pr": "pr", "review": "review"}
+              "implementation": "implement", "investigation": "investigate", "pr": "pr", "review": "review",
+              "kb": "kb", "kb-sync": "kb-sync"}
 PR_MARKER = "<!-- relay:pr-request"
 REVIEW_MARKER = "<!-- relay:review"
+KB_MARKER = "<!-- relay:kb "
+KB_SYNC_MARKER = "<!-- relay:kb-sync"
 FORMAL = ("intent", "spec", "plan")  # upstream to downstream
 
 
@@ -45,7 +48,10 @@ def from_issue_body(issue):
 
 
 def from_pull_body(pull):
-    return from_anchor(pull.get("body") or "", pull["number"], pull.get("updated_at"), "pr", PR_MARKER, "pr_body")
+    """A PR body is a pr artifact at its request marker, otherwise a kb-sync draft PR at its run marker."""
+    body = pull.get("body") or ""
+    return (from_anchor(body, pull["number"], pull.get("updated_at"), "pr", PR_MARKER, "pr_body")
+            or from_anchor(body, pull["number"], pull.get("updated_at"), "kb-sync", KB_SYNC_MARKER, "pr_body"))
 
 
 def from_review(comment, source):
@@ -53,9 +59,14 @@ def from_review(comment, source):
     return from_anchor(comment.get("body") or "", comment["id"], stamp, "review", REVIEW_MARKER, source)
 
 
+def from_kb(comment, source):
+    return from_anchor(comment.get("body") or "", comment["id"], comment.get("updated_at"), "kb", KB_MARKER, source)
+
+
 def from_comment(comment, source="comment"):
-    """A general comment is a Relay document first, otherwise a review posting unit."""
-    return from_record(comment.get("body") or "", comment["id"], comment.get("updated_at"), source) or from_review(comment, source)
+    """A general comment is a Relay document first, then a review posting unit, then a kb result."""
+    return (from_record(comment.get("body") or "", comment["id"], comment.get("updated_at"), source)
+            or from_review(comment, source) or from_kb(comment, source))
 
 
 def newest(entries):

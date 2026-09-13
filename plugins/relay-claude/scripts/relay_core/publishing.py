@@ -104,6 +104,12 @@ def prepare(store, state, candidate, gh, registry):
         raise RelayError("input", "A new issue requires a reviewed, nonempty title and body.")
     from .investigation import evidence_refs
     evidence = evidence_refs(state, candidate.get("evidence_refs", []), gh)
+    if kind in ("intent", "spec", "plan", "brief", "implementation"):
+        # With a KB present, the document must show what it looked up; without one nothing changes.
+        from .kb import reading
+        kb_root = state["runs"][run_id].get("path") if kind == "implementation" else state["repository"].get("root")
+        kb, kb_reader = reading.worktree_kb(kb_root)
+        reading.check_references(kb, kb_reader, body, kind)
     if "next_step" not in candidate:
         raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
     suggestion = steps.validate(candidate["next_step"])

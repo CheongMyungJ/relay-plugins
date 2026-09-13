@@ -1,0 +1,5 @@
+interface:
+  display_name: "Relay kb-sync"
+  short_description: "Extract or refresh knowledge base entries in batches on a draft PR."
+policy:
+  allow_implicit_invocation: false

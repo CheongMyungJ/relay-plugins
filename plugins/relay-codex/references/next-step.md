@@ -39,6 +39,8 @@ non-null choices are limited to:
 | pr | review |
 | review | null only |
 | investigate | intent, design, brief |
+| kb | review |
+| kb-sync | kb-sync, review |
 
 An allowed transition still needs sufficient current scope, evidence and verification.
 Missing prerequisites, self-recommendations, transitions outside the table and a user's
@@ -54,6 +56,10 @@ human judgment in reason and keep the relevant detail in the body.
   investigation evidence's applicability to current code. Held/no_change results use null.
 - Intent/design may suggest brief when the scope is clear enough for the shorter path,
   never to bypass unresolved questions.
+- kb uses null after recording on an open PR or directly on the default branch; only a
+  small KB PR it created may suggest review. Review never suggests kb; the person calls it.
+- kb-sync suggests itself only when it paused with remaining targets, and review only when
+  finish left a PR; a finished execution without a PR uses null.
 
 These judgments belong to the host. The helper's transition check does not establish that
 the evidence is sufficient, and the next skill still checks its own entry conditions.

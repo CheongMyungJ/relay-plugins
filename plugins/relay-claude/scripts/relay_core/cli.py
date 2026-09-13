@@ -137,15 +137,37 @@ def inspect_work(data, parsed, repo, root, gh, state, store):
     store.save(state)
     return {"work_id": state["work_id"], "work_path": str(store.path), "repository": repo,
             "input": parsed, "documents": presented(records), "runs": presented(remote_runs), "state": state,
+            "kb": kb_field(parsed["stage"], state, repo, records, basis),
             "investigations": investigations, "investigation_selection_required": parsed["stage"] == "investigate" and len(state.get("investigations", {})) > 1 and not state.get("active_investigation"),
             "source_issue": {"number": state["issue"], "url": issue.get("html_url"), "title": issue.get("title"), "body": issue["body"]} if state["issue"] and not error else None,
             "unmanaged": [{"target": str(c["id"]), "body": c["body"]} for c in comments],
             "missing_tools": missing, "remote_error": error, "basis": basis, "basis_error": basis_error}
 
 
+def kb_field(stage, state, repo, records, basis):
+    """implement: entries for the selected proof's paths/IDs; document stages: counts; no KB: null."""
+    from .kb import reading, lookup
+    try:
+        active = state.get("runs", {}).get(state.get("active_run")) if stage == "implement" else None
+        root = active["path"] if active and Path(active.get("path", "")).is_dir() else repo["root"]
+        kb, _ = reading.worktree_kb(root)
+        if stage != "implement":
+            return lookup.counts(kb)
+        if active:
+            proof = active.get("basis_summary") or active.get("plan_summary") or ""
+        elif basis:
+            proof = records["plan" if basis["kind"] == "formal" else "brief"]["body"]
+        else:
+            return lookup.counts(kb)
+        return reading.for_document(kb, proof)
+    except RelayError as exc:
+        # A damaged KB is reported with the inspection instead of hiding the documents.
+        return {"error": exc.code + ": " + str(exc)}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Relay internal recording helper")
-    parser.add_argument("command", choices=["inspect", "prepare", "publish", "run", "pr", "review", "investigate"])
+    parser.add_argument("command", choices=["inspect", "prepare", "publish", "run", "pr", "review", "investigate", "kb"])
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--work")
     args = parser.parse_args()
@@ -159,6 +181,9 @@ def main():
             result = dispatch(data, registry)
         elif args.command == "pr":
             from .pr import dispatch
+            result = dispatch(data, registry)
+        elif args.command == "kb":
+            from .kb import dispatch
             result = dispatch(data, registry)
         elif data.get("stage") in ("pr", "review"):
             raise RelayError("input", "Use the dedicated pr or review command.")
@@ -183,11 +208,11 @@ def main():
                 elif args.command == "publish":
                     result = publishing.publish(store, state, data, gh, registry)
                 elif data["action"] == "begin":
-                    result = runs.begin(store, state, data, gh, registry)
+                    result = runs.with_kb("begin", runs.begin(store, state, data, gh, registry), state)
                 elif data["action"] == "restore":
                     result = runs.restore(store, state, data, gh, registry)
                 else:
-                    result = runs.checkpoint(store, state, data, gh, registry)
+                    result = runs.with_kb(data["action"], runs.checkpoint(store, state, data, gh, registry), state)
         print(json.dumps({"ok": True, "result": result}, ensure_ascii=False, indent=2))
     except (RelayError, OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"ok": False, "error": getattr(exc, "code", "input"), "message": str(exc)}, ensure_ascii=False))

@@ -35,6 +35,8 @@ TRANSITIONS = {
     "pr": frozenset(("review",)),
     "review": frozenset(),
     "investigate": frozenset(("intent", "design", "brief")),
+    "kb": frozenset(("review",)),
+    "kb-sync": frozenset(("kb-sync", "review")),
 }
 ARTIFACT_STAGES = {"issue": "open", "spec": "design", "implementation": "implement",
                    "investigation": "investigate"}

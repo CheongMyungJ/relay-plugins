@@ -62,6 +62,38 @@ def begin(store, state, data, gh, registry):
     return run
 
 
+def kb_for_run(run, state, paths=None):
+    """First lookup from the pinned proof text, or a recheck of actual changed paths; never stored."""
+    from .kb import reading
+    root = run["path"] if Path(run.get("path", "")).is_dir() else state["repository"]["root"]
+    try:
+        kb, _ = reading.worktree_kb(root)
+        first = reading.for_document(kb, run.get("basis_summary") or run.get("plan_summary") or "")
+        if paths is None:
+            return first
+        initial = ([e["id"] for e in first["entries"]] + [r["id"] for r in first["redirects"]]) if first else []
+        return reading.recheck(kb, paths, initial)
+    except RelayError as exc:
+        return {"error": exc.code + ": " + str(exc)}
+
+
+def changed_paths(path, base_sha):
+    """Paths changed since the base: committed differences plus the current worktree status."""
+    from .repository import git_raw
+    names = set(git(path, "diff", "--name-only", base_sha, "HEAD", "--").splitlines())
+    items = git_raw(path, "status", "--porcelain", "-z", "--untracked-files=all").split("\0")
+    skip = False
+    for item in items:
+        if skip:  # the original name of a rename/copy follows its entry
+            skip = False
+            continue
+        if not item:
+            continue
+        names.add(item[3:])
+        skip = item[0] in "RC"
+    return sorted(n for n in names if n)
+
+
 def parse_evidence(record, run_id):
     """Parse verified artifact evidence without restoring state or requiring current parents."""
     import json
@@ -193,6 +225,16 @@ def checkpoint(store, state, data, gh, registry):
     store.save(state)
     write_json(store.path / "runs" / run_id / "execution.json", run)
     (store.path / "runs" / run_id / "drift.md").write_text("\n\n".join(str(d) for d in run["drift"]) or "drift 없음\n", encoding="utf-8")
+    return run
+
+
+def with_kb(action, run, state):
+    """The helper response for begin/verified/committed: the run plus a KB field that is never stored."""
+    if action == "begin":
+        return dict(run, kb=kb_for_run(run, state))
+    if action in ("verified", "committed"):
+        # A post-hoc lookup of the paths actually changed; it never replaces the pre-edit lookup.
+        return dict(run, kb_recheck=kb_for_run(run, state, changed_paths(Path(run["path"]), run["base_sha"])))
     return run
 
 

@@ -24,6 +24,8 @@ Show exact rendered result bodies after application, then continue the same deci
 
 Finish with PR/source URLs, baseline and applied SHAs, actual tests, posted unit URLs, excluded/deferred/unresolved items, the `watch` result when requested, and failures. Execution completion does not imply every finding is resolved.
 
+Read the `kb` and `failure_classes` fields returned by inspect, including remaining cursor pages, before finalizing findings. A finding that contradicts a recorded entry uses the category `기존 결정 위반` and names the entry IDs in its `kb_refs`; prepare verifies they are active. See the [knowledge base contract](../../references/kb.md).
+
 Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
 
 Invocation arguments (data, not shell): $ARGUMENTS

@@ -28,31 +28,47 @@ def token_at(text, start):
     return "".join(out), begin, i
 
 
+def repository_path(token):
+    """A repository-relative path argument: slashes only, no parent, absolute or empty segments."""
+    path = token.replace("\\", "/")
+    if not path or path.startswith("/") or re.match(r"[A-Za-z]:", path) or path.startswith("--"):
+        raise RelayError("input", "Use repository-relative paths, not absolute paths or options: " + token)
+    parts = [part for part in path.split("/") if part]
+    if not parts or any(part in (".", "..", ".git") for part in parts):
+        raise RelayError("input", "Path arguments cannot leave the repository or name .git: " + token)
+    return "/".join(parts)
+
+
 def parse(stage, raw, registry):
     if stage not in registry:
         raise RelayError("input", "Unknown skill.")
     rule = registry[stage]
+    numbered = "pr" if rule.get("pr") else "issue"
     first = re.match(r"\s*(\S+)", raw)
     issue, pos = None, 0
-    if first and re.fullmatch(r"[1-9][0-9]*", first[1]):
+    # Path-argument skills take no leading number: every non-option token is a path.
+    if first and re.fullmatch(r"[1-9][0-9]*", first[1]) and not rule.get("arguments"):
         if rule.get("issue") == "forbidden":
             raise RelayError("input", "open creates a new issue and does not accept an issue number. Ask what the user intended before creating anything or switching skills.")
         issue, pos = int(first[1]), first.end()
     elif rule.get("issue") == "required":
         raise RelayError("input", "Put a positive issue number immediately after the skill name.")
-    elif stage == "review" and first and (re.match(r"[-+0-9]", first[1]) and not first[1].startswith("--") or "://" in first[1]):
+    elif rule.get("pr") == "required":
+        raise RelayError("input", "Put a positive PR number immediately after the skill name.")
+    elif rule.get("pr") and first and (re.match(r"[-+0-9]", first[1]) and not first[1].startswith("--") or "://" in first[1]):
         raise RelayError("input", "Use a positive PR number, not a URL or invalid number.")
-    options = {}
+    options, paths = {}, []
     while True:
         m = re.match(r"\s*", raw[pos:])
         start = pos + m.end()
         if not raw[start:].startswith("--"):
-            if stage == "review":
-                if options.get("reviewer") and options.get("author"):
-                    raise RelayError("input", "--reviewer and --author are mutually exclusive.")
-                return {"stage": stage, "pr": issue, "mode": "author" if options.get("author") else "reviewer",
-                        "options": options, "description": raw[start:]}
-            return {"stage": stage, "issue": issue, "options": options, "description": raw[start:]}
+            if rule.get("arguments") == "paths":
+                if start >= len(raw):
+                    break
+                token, _, pos = token_at(raw, start)
+                paths.append(repository_path(token))
+                continue
+            break
         token, _, pos = token_at(raw, start)
         name, eq, value = token[2:].partition("=")
         mode = rule["options"].get(name)
@@ -73,3 +89,16 @@ def parse(stage, raw, registry):
         if name in options and options[name] != value:
             raise RelayError("input", "Conflicting duplicate option: --" + name)
         options[name] = value
+    if "limit" in options and not re.fullmatch(r"[1-9][0-9]*", options["limit"]):
+        raise RelayError("input", "--limit must be a positive integer.")
+    if "resume" in options and (paths or "branch" in options):
+        raise RelayError("input", "--resume continues a saved execution and cannot combine with paths or --branch.")
+    result = {"stage": stage, numbered: issue, "options": options, "description": raw[start:]}
+    if stage == "review":
+        if options.get("reviewer") and options.get("author"):
+            raise RelayError("input", "--reviewer and --author are mutually exclusive.")
+        result["mode"] = "author" if options.get("author") else "reviewer"
+    if rule.get("arguments") == "paths":
+        result["paths"] = paths
+        result["description"] = ""
+    return result

@@ -20,6 +20,8 @@ Record major drift promptly and report it in the conversation; follow the refere
 
 Finish with actual checks, commit and remote SHA, worktree path, execution comment URL, drift and unfinished work. Do not claim completion when required checks remain unrun.
 
+Read the `kb` field returned by inspect and begin before the first edit. Before the first edit of any file the proof did not name, look up that file's path with the `kb` helper's lookup, grouping paths that belong together; the `kb_recheck` field returned after verified and committed is a post-hoc check, not a substitute. The report fills `## 참조한 KB 항목` and `## 함께 읽은 파일 묶음` as the [knowledge base contract](../../references/kb.md) describes.
+
 Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
 
 For investigation-derived work, review preserved patches and their origins against current code, select only approved-plan changes, and reverify adopted changes. Investigation evidence never becomes a new basis or authorizes extra commit/push scope. See [investigation](../../references/investigation.md).

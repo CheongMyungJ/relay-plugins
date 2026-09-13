@@ -76,11 +76,13 @@ def snapshot(repo, gh, number, run_id, include_git=True):
                                       "url": entry["url"] + ("" if r["target"] == "issue" else "#issuecomment-" + r["target"])} for k, r in records.items()}
             entry["runs"] = {}
             for run_id_key, record in runs.items():
+                # The report body is evidence too (e.g. the files read together), not only its JSON block.
+                report = {"target": record["target"], "url": entry["url"] + "#issuecomment-" + record["target"], "body": record["body"]}
                 try:
                     evidence = parse_evidence(record, run_id_key)
-                    entry["runs"][run_id_key] = {"evidence": evidence, "head_matches": evidence.get("commit") == fixed["head"]["sha"]}
+                    entry["runs"][run_id_key] = {"evidence": evidence, "head_matches": evidence.get("commit") == fixed["head"]["sha"], "report": report}
                 except (RelayError, ValueError, KeyError, TypeError) as exc:
-                    entry["runs"][run_id_key] = {"warning": str(exc)}
+                    entry["runs"][run_id_key] = {"warning": str(exc), "report": report}
         except RelayError as exc:
             entry["warning"] = str(exc)
         result["linked_issues"].append(entry)

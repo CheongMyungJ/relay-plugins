@@ -120,6 +120,18 @@ class GitHub:
     def update_pull(self, number, payload):
         return self.api(f"{self.prefix}/pulls/{number}", "PATCH", payload)
 
+    def mark_ready(self, number):
+        """Turn a draft PR into a ready one; REST cannot, so this goes through the gh CLI."""
+        args = ["gh", "pr", "ready", str(number), "--repo", f"{self.host}/{self.repo}"]
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RelayError("github", "gh unavailable or timed out.") from exc
+        if proc.returncode:
+            rejected = re.search(r"HTTP (400|401|403|404|405|413|415|422|429)\b", proc.stderr)
+            raise RelayError("github_rejected" if rejected else "github", proc.stderr.strip()[:2000])
+        return self.pull(number)
+
     def get_target(self, number, target):
         return self.issue(number) if target == "issue" else self.api(f"{self.prefix}/issues/comments/{target}")
 

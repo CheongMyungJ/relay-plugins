@@ -1,0 +1,5 @@
+interface:
+  display_name: "Relay kb"
+  short_description: "Record reviewed knowledge from one PR into the path-bound knowledge base."
+policy:
+  allow_implicit_invocation: false

@@ -19,4 +19,6 @@ On resume, compare SHA, scoped signatures, evidence availability and selected en
 
 Write the full detailed draft under the returned investigation directory, then prepare to freeze conclusion, evidence, revision and recovery data. The generated overview leads with conclusion, impact and one proposed next action; review the details for consistency. Show the whole review.md and change.diff with revision summary. Only the user's approval of that exact request/hash authorizes publish. Invocation approval is insufficient. Keep one numeric comment target per investigation; revisions update it. After ambiguous writes reconcile the same request before any new prepare/start, without replaying experiments. Do not truncate, split, replace a missing comment or overwrite external edits.
 
+When the repository has a knowledge base, look up the paths and working terms of this work with the `kb` helper's lookup before drafting and cite the returned entries in the `## 참조한 KB 항목` section as the [knowledge base contract](../../references/kb.md) describes; without a KB the section is not required.
+
 Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
