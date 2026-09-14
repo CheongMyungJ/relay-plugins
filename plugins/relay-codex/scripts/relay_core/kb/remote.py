@@ -2,9 +2,10 @@
 
 Each stage saves its plan before acting and its result after. A retry reads the plan
 back: a commit is recovered from the branch when the same parent and content already
-exist, a push is delivered when the remote already has the commit or a descendant, a
-PR is recovered by its unique marker, a comment by marker, body and author. Nothing is
-force-pushed, re-posted or re-created automatically.
+exist, an empty commit when the same parent, tree and message already exist, a push is
+delivered when the remote already has the commit or a descendant, a PR is recovered by
+its unique marker, a close by the PR's state, a comment by marker, body and author.
+Nothing is force-pushed, re-posted or re-created automatically.
 """
 from .. import RelayError
 from ..artifacts import digest
@@ -96,6 +97,32 @@ def commit(stages, name, root, *, parent, paths, post_tree, message):
     sha = git(root, "rev-parse", "HEAD")
     if git(root, "status", "--porcelain") or files_digest(root, sha, record["paths"]) != post_tree:
         fail("Committed content differs from the approved post-tree.", "verification")
+    return stages.done(name, sha=sha, recovered=False)["result"]
+
+
+def empty_commit(stages, name, root, *, parent, message):
+    """One commit without file changes on top of parent, in a clean worktree; recover one that already did so.
+
+    It is its own stage so the real-change checks of `commit` stay strict: a staged or
+    modified file stops it, and a HEAD other than the parent or that exact commit conflicts.
+    """
+    record = stages.plan(name, parent=parent, message=message)
+    if record["status"] == "done":
+        return record["result"]
+    head = git(root, "rev-parse", "HEAD")
+    if head != parent:
+        parents = git(root, "rev-list", "--parents", "-n", "1", head).split()[1:]
+        if (parents == [parent] and git(root, "rev-parse", head + "^{tree}") == git(root, "rev-parse", parent + "^{tree}")
+                and git_raw(root, "log", "-1", "--format=%B", head).strip() == message.strip() and not git(root, "status", "--porcelain")):
+            return stages.done(name, sha=head, recovered=True)["result"]
+        fail("HEAD is neither the planned parent nor the planned empty commit; inspect the branch.")
+    if git(root, "status", "--porcelain"):
+        fail("The run worktree has changes; no empty commit made.")
+    stages.mark(name, "committing")
+    git(root, "commit", "-q", "--allow-empty", "-m", message)
+    sha = git(root, "rev-parse", "HEAD")
+    if git(root, "rev-parse", sha + "^{tree}") != git(root, "rev-parse", parent + "^{tree}") or git(root, "status", "--porcelain"):
+        fail("The empty commit changed files.", "verification")
     return stages.done(name, sha=sha, recovered=False)["result"]
 
 
@@ -216,6 +243,29 @@ def mark_ready(stages, name, gh, *, number):
     pull = gh.pull(number)
     if pull.get("draft", False):
         fail("PR is still a draft after marking ready.", UNCERTAIN)
+    return stages.done(name, recovered=False)["result"]
+
+
+def close_pull(stages, name, gh, *, number):
+    """Close an unmerged PR without merging; an already closed PR is recovered, a merged one conflicts."""
+    record = stages.plan(name, number=number)
+    if record["status"] == "done":
+        return record["result"]
+    pull = gh.pull(number)
+    if pull.get("merged") or pull.get("merged_at"):
+        fail("PR was merged; it is not closed as unchanged.")
+    if pull.get("state") == "closed":
+        return stages.done(name, recovered=True)["result"]
+    stages.mark(name, "closing")
+    try:
+        gh.update_pull(number, {"state": "closed"})
+    except RelayError as exc:
+        if exc.code == "github_rejected":
+            stages.mark(name, "planned")
+            raise
+    pull = gh.pull(number)
+    if pull.get("state") != "closed":
+        fail("PR is still open after closing.", UNCERTAIN)
     return stages.done(name, recovered=False)["result"]
 
 

@@ -7,6 +7,7 @@ not an error here: the dispatcher opens sessions, it never repairs records.
 """
 from relay_core import RelayError, artifacts, next_step as steps
 from relay_core.artifacts import reference
+from relay_core.kb import handoff as handoffs
 
 KIND_STAGE = {"issue": "open", "intent": "intent", "spec": "design", "plan": "plan", "brief": "brief",
               "implementation": "implement", "investigation": "investigate", "pr": "pr", "review": "review",
@@ -48,10 +49,16 @@ def from_issue_body(issue):
 
 
 def from_pull_body(pull):
-    """A PR body is a pr artifact at its request marker, otherwise a kb-sync draft PR at its run marker."""
+    """A PR body is a pr artifact at its request marker, otherwise a kb-sync draft PR at its run marker.
+
+    A body of the handoff protocol only names its run: its handoff comments are the signal,
+    so the body never ends, resumes or reviews anything.
+    """
     body = pull.get("body") or ""
-    return (from_anchor(body, pull["number"], pull.get("updated_at"), "pr", PR_MARKER, "pr_body")
-            or from_anchor(body, pull["number"], pull.get("updated_at"), "kb-sync", KB_SYNC_MARKER, "pr_body"))
+    found = from_anchor(body, pull["number"], pull.get("updated_at"), "pr", PR_MARKER, "pr_body")
+    if found or handoffs.body_run(body):
+        return found
+    return from_anchor(body, pull["number"], pull.get("updated_at"), "kb-sync", KB_SYNC_MARKER, "pr_body")
 
 
 def from_review(comment, source):
@@ -63,10 +70,20 @@ def from_kb(comment, source):
     return from_anchor(comment.get("body") or "", comment["id"], comment.get("updated_at"), "kb", KB_MARKER, source)
 
 
+def from_handoff(comment, source):
+    """A kb-sync handoff comment: its validated run/limit/round/state travel with the artifact."""
+    found = handoffs.read(comment.get("body") or "")
+    if not found:
+        return None
+    meta, value = found
+    return dict(artifact("kb-sync", comment["id"], comment.get("body"), value, steps.RECORDED,
+                         updated=comment.get("updated_at"), source=source), handoff=meta)
+
+
 def from_comment(comment, source="comment"):
-    """A general comment is a Relay document first, then a review posting unit, then a kb result."""
+    """A general comment is a Relay document first, then a review posting unit, a kb result, a kb-sync handoff."""
     return (from_record(comment.get("body") or "", comment["id"], comment.get("updated_at"), source)
-            or from_review(comment, source) or from_kb(comment, source))
+            or from_review(comment, source) or from_kb(comment, source) or from_handoff(comment, source))
 
 
 def newest(entries):

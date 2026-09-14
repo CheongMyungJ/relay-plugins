@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from relay_core import RelayError, next_step as steps
+from relay_core.kb import handoff as handoffs
 from .config import option_value
 
 # Adding a host is one entry: how a skill is addressed, and which registry key names it.
@@ -46,6 +47,21 @@ def prompt(registry, host, stage, number, settings, root):
     if lang and "lang" in registry[stage]["options"]:
         parts += ["--lang", option_value(lang, "lang")]
     return " ".join(parts)
+
+
+def handoff_prompt(registry, host, meta):
+    """`<prefix><kb-sync> --resume <run_id> --limit <n> --handoff <round> --watch` from validated metadata only."""
+    meta = handoffs.validate(meta)
+    if meta["state"] != "paused":
+        raise RelayError("input", "only a paused handoff resumes kb-sync")
+    return " ".join([HOSTS[host]["prefix"] + skill_name(registry, host, "kb-sync"), "--resume", meta["run_id"],
+                     "--limit", str(meta["limit"]), "--handoff", str(meta["round"]), "--watch"])
+
+
+def resumes_run(artifact, next_stage):
+    """A validated paused kb-sync handoff continues its run without a number (the PR check's one exception)."""
+    meta = artifact.get("handoff")
+    return bool(meta) and artifact["stage"] == "kb-sync" and next_stage == "kb-sync" and meta["state"] == "paused"
 
 
 def session_name(slug, number, stage):

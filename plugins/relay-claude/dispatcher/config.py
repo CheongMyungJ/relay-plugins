@@ -9,7 +9,7 @@ from relay_core.state import read_json, write_json
 
 HOSTS = ("claude", "codex", "opencode")
 LAUNCHERS = ("wt", "tmux", "dry-run")
-DEFAULT_AUTO = ["intent", "design", "plan", "brief", "investigate", "implement", "pr", "review"]
+DEFAULT_AUTO = ["intent", "design", "plan", "brief", "investigate", "implement", "pr", "review", "kb-sync"]
 DEFAULTS = {"poll_seconds": 30, "launcher": "wt", "paused": False,
             "auto": DEFAULT_AUTO, "gated": [], "defaults": {"lang": "ko"},
             "worktree_template": "{parent}/{name}-wt-{issue}", "repos": []}

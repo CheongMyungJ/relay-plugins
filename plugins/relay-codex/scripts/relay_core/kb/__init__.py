@@ -9,7 +9,7 @@ from ..github import GitHub
 
 READ = ("lookup", "check", "apply", "fragment", "render")
 PR = ("inspect", "prepare", "publish")
-SYNC = ("begin", "batch", "checkpoint", "resume", "finish")
+SYNC = ("begin", "batch", "checkpoint", "resume", "handoff", "finish")
 ACTIONS = READ + PR + SYNC
 
 

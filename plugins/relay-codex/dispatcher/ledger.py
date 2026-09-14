@@ -13,7 +13,7 @@ from relay_core import RelayError
 from relay_core.state import read_json, write_json
 
 EMPTY = {"schema": 1, "processed": {}, "sessions": {}, "pending": {}, "settling": {}, "cursors": {},
-         "watched": {}, "last_cycle": None}
+         "watched": {}, "handoffs": {}, "last_cycle": None}
 
 
 def pid_alive(pid):
@@ -52,6 +52,10 @@ def item_key(slug, number):
 
 def artifact_key(slug, target, digest):
     return f"{slug}#{target}@{digest}"
+
+
+def handoff_key(slug, run_id):
+    return f"{slug}@kb-sync:{run_id}"
 
 
 def model_fields(entry):
@@ -154,6 +158,14 @@ class Ledger:
 
     def clear_settling(self, item):
         self.data["settling"].pop(item, None)
+
+    # kb-sync handoffs: the latest (round, state) judged per run, whatever comment carried it
+    def handoff(self, slug, run_id):
+        return self.data["handoffs"].get(handoff_key(slug, run_id))
+
+    def record_handoff(self, slug, run_id, meta, target, when):
+        self.data["handoffs"][handoff_key(slug, run_id)] = {"round": meta["round"], "state": meta["state"],
+                                                            "limit": meta["limit"], "target": str(target), "at": iso(when)}
 
     # cursors
     def cursor(self, key):

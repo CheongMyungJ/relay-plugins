@@ -93,6 +93,8 @@ def parse(stage, raw, registry):
         raise RelayError("input", "--limit must be a positive integer.")
     if "resume" in options and (paths or "branch" in options):
         raise RelayError("input", "--resume continues a saved execution and cannot combine with paths or --branch.")
+    if "handoff" in options and ("resume" not in options or not re.fullmatch(r"[1-9][0-9]*", options["handoff"])):
+        raise RelayError("input", "--handoff takes a positive round and continues a run named by --resume.")
     result = {"stage": stage, numbered: issue, "options": options, "description": raw[start:]}
     if stage == "review":
         if options.get("reviewer") and options.get("author"):

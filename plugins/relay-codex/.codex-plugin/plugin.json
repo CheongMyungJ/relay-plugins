@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Reviewed SDLC artifacts, implementation, GitHub pull requests and PR reviews.",
   "author": {
     "name": "CheongMyungJ"

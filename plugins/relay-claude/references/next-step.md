@@ -43,8 +43,8 @@ non-null choices are limited to:
 | kb-sync | kb-sync, review |
 
 An allowed transition still needs sufficient current scope, evidence and verification.
-Missing prerequisites, self-recommendations, transitions outside the table and a user's
-instruction to hold or end follow-up require null. Explain remaining work or the needed
+Missing prerequisites, self-recommendations (except a kb-sync handoff, below), transitions
+outside the table and a user's instruction to hold or end follow-up require null. Explain remaining work or the needed
 human judgment in reason and keep the relevant detail in the body.
 
 - Review always uses null, in reviewer and author modes, with or without code application
@@ -58,8 +58,10 @@ human judgment in reason and keep the relevant detail in the body.
   never to bypass unresolved questions.
 - kb uses null after recording on an open PR or directly on the default branch; only a
   small KB PR it created may suggest review. Review never suggests kb; the person calls it.
-- kb-sync suggests itself only when it paused with remaining targets, and review only when
-  finish left a PR; a finished execution without a PR uses null.
+- kb-sync suggests itself only in the handoff comment of a call that reached its limit with
+  targets left, and review only in the finished handoff after a PR with real changes was
+  confirmed ready. A run that ends with only its empty start commit, or without a PR, uses
+  null. Its PR body carries no next step, and no-change rounds still post their handoff.
 
 These judgments belong to the host. The helper's transition check does not establish that
 the evidence is sufficient, and the next skill still checks its own entry conditions.

@@ -42,6 +42,18 @@ def identifier(value, label):
     return value
 
 
+def handoff_record(record):
+    """A sync run's handoff record, absent in runs from before handoffs; a damaged one is a state error."""
+    if record is None:
+        return None
+    counts = ("limit", "posted", "consumed")
+    if (not isinstance(record, dict) or record.get("protocol") != 1 or not isinstance(record.get("comments"), dict)
+            or any(type(record.get(k)) is not int or record[k] < 0 for k in counts)
+            or record["limit"] < 1 or record["consumed"] > record["posted"]):
+        raise RelayError("state", "KB run handoff record is damaged; inspect run.json before continuing.")
+    return record
+
+
 class KbPrStore:
     def __init__(self, root):
         self.root, self.common = main_worktree(root, "KB PR")
@@ -104,6 +116,7 @@ class KbSyncStore:
         run = read_json(path)
         if run.get("run_id") != run_id or run.get("schema") != 1:
             raise RelayError("state", "KB run identity differs from its directory.")
+        handoff_record(run.get("handoff"))
         return run
 
     def save(self, run):

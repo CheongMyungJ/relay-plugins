@@ -4,6 +4,7 @@ import time
 import uuid
 
 from relay_core import RelayError, next_step as steps
+from relay_core.kb import handoff as handoffs
 from relay_core.watch import LABEL
 from . import config as configuration, detect, policy
 from .launcher import resume_argv, shell_text
@@ -32,9 +33,15 @@ def go_command(slug, number):
     return f"relay-dispatch go {slug}#{number}"
 
 
-def launch(ctx, item, entry):
-    """Start the session recorded in entry; a failed launch leaves a pending entry, never a session."""
+def launch(ctx, item, entry, verified=False):
+    """Start the session recorded in entry; a failed launch leaves a pending entry, never a session.
+
+    A kb-sync resume that did not come straight from this cycle's judgment is checked
+    against the PR first, so go, unpausing and launcher retries never run a replaced round.
+    """
     if not check_pending_transition(ctx, item, entry):
+        return False
+    if entry.get("handoff") and not verified and not handoff_current(ctx, item, entry):
         return False
     ledger, now = ctx.ledger, ctx.clock()
     session_id = str(uuid.uuid4())
@@ -44,7 +51,8 @@ def launch(ctx, item, entry):
         ctx.log.line(f"{item}: 이 claude는 {set(('--session-id', '--name')) - set(options)} 옵션을 지원하지 않아 뺀다")
     ledger.open_session(item, {"slug": entry["slug"], "number": entry["number"], "stage": entry["stage"], "host": entry["host"],
                                "session_id": session_id, "cwd": entry["cwd"], "name": entry["name"], "argv": argv,
-                               "started_at": iso(now), **model_fields(entry)})
+                               "started_at": iso(now), **model_fields(entry),
+                               **({"handoff": dict(entry["handoff"])} if entry.get("handoff") else {})})
     ledger.save()
     outcome = ctx.launcher.launch(entry["cwd"], argv, entry["name"], session_id)
     if outcome["ok"]:
@@ -56,6 +64,41 @@ def launch(ctx, item, entry):
     ledger.set_pending(item, dict(entry, gate="런처 실패", error=outcome["error"], created_at=iso(now)))
     ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry.get("artifact", "-"), "런처 실패",
                   outcome["error"], outcome["command"] + " | " + go_command(entry["slug"], entry["number"]))
+    return False
+
+
+def handoff_current(ctx, item, entry):
+    """Whether a stored kb-sync resume is still its run's latest handoff on the open PR carrying that run."""
+    meta, slug, number = entry["handoff"], entry["slug"], entry["number"]
+    seen = ctx.ledger.handoff(slug, meta["run_id"])
+    reason = None
+    if not seen or handoffs.order(seen) != handoffs.order(meta):
+        reason = "새 인계 회차로 대체됨"
+    else:
+        try:
+            gh = ctx.remote_for(configuration.identity(entry["cwd"]))
+            pull = gh.pull(number)
+            comments = gh.comments(number)
+        except RelayError as exc:
+            gate = "인계 재확인 실패: " + exc.code
+            if entry.get("gate") != gate:
+                ctx.ledger.set_pending(item, dict(entry, gate=gate))
+                ctx.log.event(slug, number, entry.get("title"), entry.get("artifact", "-"), "보류", f"{gate} ({exc})")
+            return False
+        found = [handoffs.read(c.get("body") or "") for c in comments]
+        found = [f[0] for f in found if f and f[0]["run_id"] == meta["run_id"]]
+        latest = max(found, key=handoffs.order, default=None)
+        if pull.get("state") != "open" or pull.get("merged") or pull.get("merged_at"):
+            reason = "PR이 닫혔거나 머지됨"
+        elif handoffs.body_run(pull.get("body")) != (meta["run_id"], handoffs.PROTOCOL):
+            reason = "PR 본문의 kb-sync run 마커와 인계 run이 다름"
+        elif latest != meta:
+            reason = "PR의 최신 인계가 아님"
+    if reason is None:
+        return True
+    if (ctx.ledger.pending(item) or {}).get("handoff") == meta:
+        ctx.ledger.pop_pending(item)
+    ctx.log.event(slug, number, entry.get("title"), entry.get("artifact", "-"), "자동 진행 종료", reason)
     return False
 
 
@@ -110,7 +153,8 @@ def judge(ctx, gh, found, item, raw, artifact, settings, head_key=None, repo_ent
         ctx.log.event(slug, number, title, label, "자동 진행 종료", reason)
         return
     kind = "pr" if "pull_request" in raw else "issue"
-    if next_stage not in (None, "open") and not policy.accepts(ctx.registry, next_stage, kind):
+    resumes = kind == "pr" and policy.resumes_run(artifact, next_stage)
+    if not resumes and next_stage not in (None, "open") and not policy.accepts(ctx.registry, next_stage, kind):
         # A PR item has no issue number to hand to an issue skill, and an issue has no PR to review.
         ctx.log.event(slug, number, title, label, "무시", f"{next_stage}은(는) {'PR' if kind == 'pr' else '이슈'} 번호를 받지 않음")
         return
@@ -119,7 +163,10 @@ def judge(ctx, gh, found, item, raw, artifact, settings, head_key=None, repo_ent
         return
     selected = configuration.session_settings(ctx.config, repo_entry or {}, next_stage)
     try:
-        prompt = policy.prompt(ctx.registry, selected["host"], next_stage, number, settings, found["root"])
+        if resumes:
+            prompt = policy.handoff_prompt(ctx.registry, selected["host"], artifact["handoff"])
+        else:
+            prompt = policy.prompt(ctx.registry, selected["host"], next_stage, number, settings, found["root"])
     except RelayError as exc:
         ctx.log.event(slug, number, title, label, "무시", f"프롬프트 조립 실패: {exc}")
         return
@@ -131,12 +178,14 @@ def judge(ctx, gh, found, item, raw, artifact, settings, head_key=None, repo_ent
              "source_stage": artifact["stage"], "source_target": artifact["target"], "source_digest": artifact["digest"],
              "prompt": prompt, "name": policy.session_name(slug, number, next_stage), "head_key": head_key,
              "artifact": label, "reason": reason, "gate": reason, "created_at": iso(now), "title": title}
+    if resumes:
+        entry["handoff"] = dict(artifact["handoff"])
     if action == policy.GATE:
         ledger.set_pending(item, entry)
         ctx.log.event(slug, number, title, label, "게이트 대기", reason,
                       shell_text(ctx.launcher.session_argv(entry)) + " | " + go_command(slug, number))
         return
-    launch(ctx, item, entry)
+    launch(ctx, item, entry, verified=True)
 
 
 def fresh_artifacts(ctx, slug, candidates):
@@ -228,18 +277,49 @@ def process_pull(ctx, gh, found, raw, settings, since, repo_entry=None):
             artifact = detect.from_review(review, "review")
             if artifact:
                 candidates.append(artifact)
-    fresh = fresh_artifacts(ctx, slug, candidates)
+    fresh = drop_stale_handoffs(ctx, found, raw, fresh_artifacts(ctx, slug, candidates))
     if not fresh:
         return
     latest = detect.newest([a for _, a in fresh])
     for key, artifact in fresh:
         ledger.mark_processed(key, now, "판정" if artifact is latest else "같은 주기의 더 최근 산출물에 의해 대체")
+    if latest.get("handoff"):
+        pull = pull or gh.pull(number)
+        if handoffs.body_run(pull.get("body")) != (latest["handoff"]["run_id"], handoffs.PROTOCOL):
+            ctx.log.event(slug, number, raw.get("title"), label_of(latest), "무시", "PR 본문의 kb-sync run 마커와 인계 run이 다름")
+            return
     if pull and (pull.get("merged") or pull.get("merged_at")):
         ledger.pop_pending(item)
         ledger.close_session(item, now, "머지됨")
         ctx.log.event(slug, number, raw.get("title"), label_of(latest), "종료", "PR 머지됨")
         return
+    if latest.get("handoff"):
+        ledger.record_handoff(slug, latest["handoff"]["run_id"], latest["handoff"], latest["target"], now)
     judge(ctx, gh, found, item, raw, latest, settings, artifact_key(slug, latest["target"], latest["digest"]), repo_entry)
+
+
+def drop_stale_handoffs(ctx, found, raw, fresh):
+    """Keep one handoff per new (run, round, state); repeats, edits and older rounds never reach judgment.
+
+    They are recorded as processed without touching sessions or pending commands, so a
+    re-posted or edited comment, a restart or a re-poll cannot hand a round out twice.
+    """
+    ledger, now, slug = ctx.ledger, ctx.clock(), found["slug"]
+    kept, taken = [], set()
+    for key, artifact in sorted(fresh, key=lambda ka: handoffs.order(ka[1]["handoff"]) if ka[1].get("handoff") else (0, 0), reverse=True):
+        meta = artifact.get("handoff")
+        if not meta:
+            kept.append((key, artifact))
+            continue
+        seen = ledger.handoff(slug, meta["run_id"])
+        if meta["run_id"] in taken or (seen and handoffs.order(meta) <= handoffs.order(seen)):
+            ledger.mark_processed(key, now, "중복·오래된 인계 회차")
+            ctx.log.event(slug, raw["number"], raw.get("title"), label_of(artifact), "무시",
+                          f"kb-sync {meta['run_id']} 회차 {meta['round']} {meta['state']}는 이미 판정된 인계보다 새롭지 않음")
+            continue
+        taken.add(meta["run_id"])
+        kept.append((key, artifact))
+    return kept
 
 
 def reconcile_vanished(ctx, gh, found, present):
