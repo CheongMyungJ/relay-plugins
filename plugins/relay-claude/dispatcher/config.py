@@ -11,10 +11,11 @@ HOSTS = ("claude", "codex", "opencode")
 LAUNCHERS = ("wt", "tmux", "dry-run")
 DEFAULT_AUTO = ["intent", "design", "plan", "brief", "investigate", "implement", "pr", "review", "kb-sync"]
 DEFAULTS = {"poll_seconds": 30, "launcher": "wt", "paused": False,
-            "auto": DEFAULT_AUTO, "gated": [], "defaults": {"lang": "ko"},
-            "worktree_template": "{parent}/{name}-wt-{issue}", "repos": []}
-OVERRIDES = ("host", "auto", "gated", "defaults", "worktree_template")
+            "auto": DEFAULT_AUTO, "gated": [], "defaults": {"lang": "ko"}, "repos": []}
+OVERRIDES = ("host", "auto", "gated", "defaults")
 SESSION_KEYS = {"host", "model", "skills"}
+# Read and kept on save so older config files stay valid, but never used: implement prepares its own workspace.
+LEGACY_KEYS = {"worktree_template"}
 PLACEHOLDERS = ("{parent}", "{name}", "{issue}")
 
 
@@ -106,7 +107,7 @@ def validate(config, registry):
         raise RelayError("input", "config must be a JSON object")
     merged = copy.deepcopy(DEFAULTS)
     merged.update(copy.deepcopy(config))
-    unknown = set(merged) - set(DEFAULTS) - SESSION_KEYS
+    unknown = set(merged) - set(DEFAULTS) - SESSION_KEYS - LEGACY_KEYS
     if unknown:
         raise RelayError("input", "unknown config keys: " + ", ".join(sorted(unknown)))
     if type(merged["poll_seconds"]) is not int or merged["poll_seconds"] < 10:
@@ -122,15 +123,23 @@ def validate(config, registry):
         label = f"repos[{index}]"
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"].strip():
             raise RelayError("input", label + " needs a path string")
-        extra = set(entry) - set(OVERRIDES) - SESSION_KEYS - {"path"}
+        extra = set(entry) - set(OVERRIDES) - SESSION_KEYS - LEGACY_KEYS - {"path"}
         if extra:
             raise RelayError("input", label + " has unknown keys: " + ", ".join(sorted(extra)))
         validate_scope(entry, label, registry)
     return merged
 
 
+def legacy_warnings(config):
+    """Deprecation notices for kept-but-ignored keys; the file itself is never rewritten for them."""
+    scopes = [("config", config)] + [(f"repos[{i}] ({e.get('path')})", e) for i, e in enumerate(config.get("repos", []))]
+    return [f"{label}.worktree_template는 더 이상 쓰지 않는다: implement가 이슈 작업공간을 직접 준비한다. "
+            "설정 파일에서 지워도 된다 (디스패처는 파일을 고치지 않음)"
+            for label, scope in scopes if "worktree_template" in scope]
+
+
 def settings(config, entry):
-    """Effective host/auto/gated/defaults/template for one repository entry."""
+    """Effective host/auto/gated/defaults for one repository entry."""
     result = {key: copy.deepcopy(config[key]) for key in OVERRIDES if key in config}
     result.setdefault("host", "claude")
     for key in OVERRIDES:

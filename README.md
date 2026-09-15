@@ -54,7 +54,7 @@ codex plugin add relay@relay
 | 설계 | `/relay:design 13` | `$relay-design 13` | spec 코멘트 |
 | 구현 계획 | `/relay:plan 13` | `$relay-plan 13` | plan 코멘트 |
 | 간소화 정의 | `/relay:brief 13` | `$relay-brief 13` | brief 코멘트 |
-| 구현 | `/relay:implement 13 --worktree` | `$relay-implement 13 --worktree` | 코드·커밋·push·구현 보고 |
+| 구현 | `/relay:implement 13` | `$relay-implement 13` | 코드·커밋·push·구현 보고 |
 | PR 생성 | `/relay:pr 13` | `$relay-pr 13` | 브랜치의 실제 변경을 설명하는 PR |
 | PR 리뷰 | `/relay:review 21 --reviewer` | `$relay-review 21 --reviewer` | 리뷰 초안과 선택한 수정·게시 |
 | KB 기록 | `/relay:kb 21` | `$relay-kb 21` | PR의 결정·제약을 담은 `docs/kb/` 커밋과 결과 코멘트 |
@@ -75,14 +75,17 @@ Codex에서 간소화 경로로 진행하는 예시입니다. 각 단계의 결�
 ```text
 $relay-open 검색 결과가 비어 있을 때 안내를 보여주고 싶어.
 $relay-brief 13 --lang ko 기존 화면 구성을 유지해줘.
-$relay-implement 13 --worktree
+$relay-implement 13
 $relay-pr 13
 $relay-review 21 --reviewer
 ```
 
 `open`이 만든 실제 이슈번호와 `pr`이 만든 실제 PR번호로 바꿉니다.
 Claude Code에서는 같은 인자를 사용하고 `$relay-`를 `/relay:`로 바꾸면 됩니다.
-옵션은 자연어 설명 앞에 둡니다. worktree 경로를 직접 지정하려면 `--worktree="../my-task"`처럼 씁니다.
+옵션은 자연어 설명 앞에 둡니다.
+코드는 이슈마다 원격 기본 브랜치의 확인된 커밋에서 한 번 준비한 형제 작업공간에서 읽고 구현하며, 단계를 바꾸거나 다시 호출해도 같은 작업공간을 이어 씁니다.
+현재 checkout의 미커밋 변경·untracked 파일·`.env`는 옮기지 않습니다. 기준 코드는 대화에서 명시적으로 요청할 때만 최신 원격으로 갱신합니다.
+implement에는 경로·브랜치 옵션이 없으며 예전 `--worktree`·`--base`·`--branch`는 옵션을 뺀 호출을 안내하는 오류가 됩니다.
 formal 문서 묶음과 brief가 모두 있으면 implement에 `--basis formal` 또는 `--basis brief`를 지정합니다.
 
 문서 스킬은 같은 세션에서 전체 초안을 검토하고 피드백을 반영한 뒤 확정본을 승인받아 게시합니다.

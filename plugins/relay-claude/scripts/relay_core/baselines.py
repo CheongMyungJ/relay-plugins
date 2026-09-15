@@ -10,8 +10,30 @@ SETS = {"formal": ["intent", "spec", "plan"], "brief": ["brief"]}
 
 def from_records(records):
     return {name: {"reference": reference(record), "parents": record["meta"]["parents"],
-                   "stale": record["stale"], "body": record["body"]}
+                   "stale": record["stale"], "body": record["body"], "workspace": record["meta"].get("workspace")}
             for name, record in records.items()}
+
+
+def assessed(basis, documents, workspace):
+    """After a refresh, each basis document was written in the active generation or assessed there by exact reference.
+
+    The first generation accepts documents without workspace metadata; their code freshness stays unknown.
+    """
+    number = workspace["active_generation"]
+    if number == 1:
+        return basis
+    evaluations = [e["documents"] for e in workspace.get("evaluations", [])
+                   if e["workspace_id"] == workspace["workspace_id"] and e["generation"] == number]
+    missing = []
+    for name, ref in basis["parents"].items():
+        written = (documents.get(name) or {}).get("workspace") or {}
+        if (written.get("workspace_id"), written.get("generation")) == (workspace["workspace_id"], number):
+            continue
+        if not any(documents_ref.get(name) == ref for documents_ref in evaluations):
+            missing.append(name)
+    if missing:
+        raise RelayError("stale", "Assess these documents against the refreshed workspace before implementing: " + ", ".join(missing))
+    return basis
 
 
 def proof_hashes(summary, suggestion):

@@ -2,6 +2,9 @@
 import re
 from . import RelayError
 
+# Options a skill no longer accepts fail with guidance instead of the generic unknown-option error.
+REMOVED = {"implement": ("worktree", "base", "branch")}
+
 
 def token_at(text, start):
     i = start
@@ -72,16 +75,15 @@ def parse(stage, raw, registry):
         token, _, pos = token_at(raw, start)
         name, eq, value = token[2:].partition("=")
         mode = rule["options"].get(name)
+        if mode is None and name in REMOVED.get(stage, ()):
+            raise RelayError("input", f"--{name} was removed from {stage}: Relay selects the issue workspace, base commit "
+                             f"and branch from the issue number. Invoke again without it, for example `{stage} {issue} --watch`.")
         if mode is None:
             raise RelayError("input", "Unknown or inapplicable option: --" + name)
         if mode == "flag":
             if eq:
                 raise RelayError("input", "Mode flags do not take values.")
             value = True
-        elif mode == "optional-equals":
-            if eq and not value:
-                raise RelayError("input", "Empty worktree path.")
-            value = value if eq else True
         elif not eq:
             value, _, pos = token_at(raw, pos)
         if value == "" or (isinstance(value, str) and value.startswith("--")):

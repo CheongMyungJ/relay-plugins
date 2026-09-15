@@ -1,18 +1,14 @@
 # Implementation and drift
 
-## Start and worktree
+## Start and workspace
 
-Run inspect with stage implement. The selected formal (intent/spec/plan) or brief comments must be recorded and current. Fetch the selected remote's base branch using host tools before resolving its SHA. Start run:
+Run inspect with stage implement and workspace ensure ([workflow](workflow.md)). The selected formal (intent/spec/plan) or brief comments must be recorded and current. Start run:
 ```json
 {"action":"begin","execution_authorized":true}
 ```
-The helper returns run_id, branch, base_sha and absolute path. Preserve these. Resume an active run rather than calling new_run:true unless a separate execution was explicitly requested.
+The helper returns run_id, the issue workspace path and branch, and base_sha (the workspace HEAD when this run starts). Preserve these. Resume an active run rather than calling new_run:true unless a separate execution was explicitly requested.
 
-Check git status, branch list and git worktree list --porcelain. The default is a new task branch in current worktree. With --worktree create a separate tree at the returned path. For a new branch use git switch -c <branch> <base_sha> or git worktree add -b <branch> <path> <base_sha>, as argument arrays/host-safe commands.
-
-Never overwrite an existing unrelated directory, reset/rebase an existing branch, force checkout a branch used by another worktree, or move user changes. Existing branches/paths must be tied to this run and preserve history. Resolve dirty-current-worktree conflicts with the user or their requested worktree. Do not copy secrets or uncommitted files automatically.
-
-After creating the worktree, run {"action":"prepared","run_id":"..."} from the original state-owning worktree first. The helper verifies the run's execution path/branch/repository and writes a pointer to the original state. Subsequent commands can run from the execution worktree through that pointer. It never creates worktrees or executes code development itself. Keep the worktree at completion.
+Develop, check, commit and push only in that path on that branch. Do not reset, rebase, switch or recreate it, and do not copy secrets or uncommitted files from another checkout. A run recorded before issue workspaces keeps its recorded path, branch and base: an older run still in planned status registers {"action":"prepared","run_id":"..."} from its recorded worktree, and nothing moves it. Keep the workspace at completion.
 
 ## Code and verification
 
@@ -41,7 +37,7 @@ Use the existing commit/push conditions at these observation points. `runs.HOLD_
 | user_or_permission | 사용자 보류 지시·실행 환경 권한 제한 | As soon as a user hold or actual host/tool permission denial is observed |
 | scope | 승인 범위 이탈 | When necessary work falls outside the selected approved basis, no later than staging |
 | basis | 기준 문서 변경·누락·stale | At inspect/begin basis_error or checkpoint baseline errors |
-| git | Git 충돌·금지된 Git 작업 | During branch/worktree preparation, upstream recheck before commit, and push |
+| git | Git 충돌·금지된 Git 작업 | When workspace ensure or begin reports a Git conflict, upstream recheck before commit, and push |
 
 Ordinary work before checks and immediately repairable test failures do not create approval waits. A hold starts when the host determines that the next automatic step cannot proceed without a person's decision. Scope means work outside the authorized basis; drift means a different implementation of work the basis covers. Judge against basis_summary and retain evidence.
 
@@ -50,7 +46,7 @@ Ordinary work before checks and immediately repairable test failures do not crea
 3. When existing progress conditions are met and the user authorizes proceeding, continue the remaining verified → commit → committed → push → pushed steps, then prepare and publish the completed report. That decision covers commit, push and completed publication together; no repeated report approval is needed.
 4. If conditions remain unmet and the user chooses publication of the current state and an end to follow-up, publish the exact held candidate they approved with next=null. Record their actual decision and remaining work in the draft; a resulting candidate change follows step 2. The same feedback can be the publication approval, without a separate confirmation question. Use the [recording authorization](recording.md) fields to bind that decision to the candidate. Approval never turns failed/unrun checks into passes or overrides host permissions, prohibited Git actions or stale execution bases.
 
-With no feedback, including a dispatcher-opened session, leave the draft, state and worktree intact and end with “보류 중, 게시 없음”, paths and instructions to invoke relay-implement again or use relay-dispatch go --resume. Never substitute an empty comment or automatic publication. A published held record has next=null, so dispatcher closes the tracked session without declaring task success or launching a successor; an unpublished hold must not be described as a remotely observed completion.
+With no feedback, including a dispatcher-opened session, leave the draft, state and workspace intact and end with “보류 중, 게시 없음”, paths and instructions to invoke relay-implement again or use relay-dispatch go --resume. Never substitute an empty comment or automatic publication. A published held record has next=null, so dispatcher closes the tracked session without declaring task success or launching a successor; an unpublished hold must not be described as a remotely observed completion.
 
 Resume the same run with its stored draft, status, failure and holds. Preserve completed stages and original requests: push failure after commit resumes push; publication failure after push resumes publication. A held record later completed updates the same comment at version+1. Do not introduce a second commit cycle for an already pushed run; new work or a changed basis requires an explicitly requested separate execution as applicable. An active user hold still stops the host even if helper state already meets the complete classification; holds is history, not a machine gate.
 
@@ -64,7 +60,7 @@ For major drift, immediately record a drift event and report reasons, impact and
 
 After local-state loss, inspect returns remote run records. Compare their recorded path/branch/SHA with actual Git state. Use run input {"action":"restore","run_id":"recorded-id","execution_authorized":true,"path":"verified-local-worktree"}. The helper verifies the branch, recorded commit, file signature and remote SHA when applicable before restoring. If the recorded status predates an actual commit, inspect and resolve that gap instead of redoing code. Missing evidence requires clarification of the branch/resume point rather than starting a duplicate run.
 
-Finish with verification, commit, remote SHA, execution URL, path, drift and incomplete checks. PR creation/merge, deployment and worktree deletion are outside this workflow.
+Finish with verification, commit, remote SHA, execution URL, path, drift and incomplete checks. PR creation/merge, deployment and workspace deletion are outside this workflow.
 
 ## Execution basis
 

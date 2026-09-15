@@ -144,6 +144,8 @@ def cmd_run(args, env):
     config = live.value
     if not config["repos"]:
         env.out("감시할 저장소가 없다. `relay-dispatch repo add <clone-path>` 먼저 실행하라.")
+    for warning in configuration.legacy_warnings(config):
+        env.out("경고: " + warning)
     check_wrapper(env)
     hosts = [found["host"] for _, found, _ in registered(env, config) if found] or ["github.com"]
     login = env.remote_for({"slug": "", "host": hosts[0]}).viewer()
@@ -197,6 +199,8 @@ def cmd_status(args, env):
     data, now = env.ledger.data, env.clock()
     env.out(f"로그인: {data.get('login') or '(run을 아직 실행하지 않음)'}  설정: {configuration.path()}  paused: {config['paused']}")
     env.out(f"launcher: {config['launcher']}  host: {config.get('host', 'claude')}  poll: {config['poll_seconds']}s  auto: {', '.join(config['auto'])}  gated: {', '.join(config['gated']) or '-'}")
+    for warning in configuration.legacy_warnings(config):
+        env.out("경고: " + warning)
     env.out("모델 표시는 디스패처가 전달하는 선택이며 호스트 내부 모델의 실시간 조회가 아니다.")
     env.out("전역 기본: " + selection_text(configuration.session_settings(config, {}, None)))
     for stage in sorted(config.get("skills", {})):

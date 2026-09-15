@@ -90,7 +90,7 @@ def signatures(root, files):
     return result
 
 
-def baseline(store, request):
+def baseline(store, request, state=None):
     if not isinstance(request, dict):
         raise RelayError("input", "baseline must be an object.")
     cwd = Path(text(request.get("cwd"), "cwd")).resolve()
@@ -99,9 +99,17 @@ def baseline(store, request):
     env = request.get("environment")
     if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()):
         raise RelayError("input", "environment must contain only selected safe text values.")
-    return {"cwd": str(cwd), "base_sha": repository.git(cwd, "rev-parse", "HEAD"),
-            "files": signatures(cwd, request.get("files")), "environment": env,
-            "environment_hash": hashed(env)}
+    result = {"cwd": str(cwd), "base_sha": repository.git(cwd, "rev-parse", "HEAD"),
+              "files": signatures(cwd, request.get("files")), "environment": env,
+              "environment_hash": hashed(env)}
+    from .workspaces import current
+    found = current(store, state) if state else None
+    if found:
+        # After workspace ensure the baseline is the issue workspace's active generation, not the caller's checkout.
+        if cwd != Path(found["generation"]["path"]).resolve():
+            raise RelayError("input", "Investigation baseline cwd must be the issue workspace: " + found["generation"]["path"])
+        result["workspace"] = found["reference"]
+    return result
 
 
 def manifest(store, key, entries):
@@ -130,6 +138,9 @@ def applicability(store, run, current=None):
         for field in ("base_sha", "files", "environment_hash"):
             if current[field] != old[field]:
                 reasons.append(field + " changed; reassess recorded evidence")
+        before, after = old.get("workspace"), current.get("workspace")
+        if before and after and (before["workspace_id"], before["generation"]) != (after["workspace_id"], after["generation"]):
+            reasons.append("workspace generation changed; earlier observations need reassessment")
     except (RelayError, OSError) as exc:
         unavailable.append(str(exc))
     root = directory(store, run["investigation_id"]) / "evidence"
@@ -237,7 +248,7 @@ def start(store, state, data, gh):
            "repository": {k: state["repository"].get(k, "github.com") for k in ("host", "repo")},
            "issue": state["issue"], "created_at": now(), "updated_at": now(), "revision": 0,
            "status": "investigating", "publication": "none", "pending": None, "target": None,
-           "request": scope, "baseline": baseline(store, data["baseline"]), "outcome": None,
+           "request": scope, "baseline": baseline(store, data["baseline"], state), "outcome": None,
            "conclusion": None, "observations": [], "hypotheses": [], "experiments": [], "facts": [],
            "excluded_causes": [], "uncertainties": [], "evidence": [], "changes": [], "failure": None,
            "active_checkpoint": None, "applied_events": [], "history": [], "applicability": None}
@@ -339,7 +350,7 @@ def checkpoint(store, state, data, resume=False):
     after = copy.deepcopy(run)
     if resume:
         text(data.get("reason"), "resume reason")
-        current = baseline(store, data["baseline"])
+        current = baseline(store, data["baseline"], state)
         after["applicability"] = applicability(store, run, current)
         after["history"].append({"revision": run["revision"], "outcome": run["outcome"], "conclusion": run["conclusion"],
                                  "baseline": run["baseline"], "reason": data["reason"]})
@@ -357,7 +368,7 @@ def checkpoint(store, state, data, resume=False):
             if not isinstance(assessment, dict):
                 raise RelayError("input", "assessment must be an object.")
             text(assessment.get("reason"), "assessment reason")
-            current = baseline(store, assessment["baseline"])
+            current = baseline(store, assessment["baseline"], state)
             after["history"].append({"revision": run["revision"], "baseline": run["baseline"], "assessment": assessment})
             after["baseline"] = current
             after["applicability"] = applicability(store, after, current)

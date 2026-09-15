@@ -1,6 +1,5 @@
 """Judgment and prompt assembly. Nothing read from GitHub ever enters a prompt."""
 import re
-from pathlib import Path
 
 from relay_core import RelayError, next_step as steps
 from relay_core.kb import handoff as handoffs
@@ -22,15 +21,11 @@ def skill_name(registry, host, stage):
     return registry[stage].get(table["name"]) or registry[stage][table["fallback"]]
 
 
-def worktree_path(template, root, issue):
-    root = Path(root)
-    return str(Path(template.format(parent=str(root.parent), name=root.name, issue=issue)))
+def prompt(registry, host, stage, number, settings, root=None):
+    """`<prefix><skill> <number> [--reviewer] --watch [--lang x]`.
 
-
-def prompt(registry, host, stage, number, settings, root):
-    """`<prefix><skill> <number> [--reviewer] --watch [--worktree="…"] [--lang x]`.
-
-    Numbers, registered skill names and validated configuration values only.
+    Numbers, registered skill names and validated configuration values only. The skill itself
+    prepares the issue workspace, so no path, base or branch travels in the prompt.
     """
     if type(number) is not int or number < 1:
         raise RelayError("input", "issue or PR number must be a positive integer")
@@ -38,15 +33,16 @@ def prompt(registry, host, stage, number, settings, root):
     if stage == "review":
         parts.append("--reviewer")
     parts.append("--watch")
-    if stage == "implement":
-        path = worktree_path(settings["worktree_template"], root, number)
-        if re.search(r"[\"'\r\n]", path):
-            raise RelayError("input", "worktree path must not contain quotes or line breaks")
-        parts.append('--worktree="' + path + '"')
     lang = settings.get("defaults", {}).get("lang")
     if lang and "lang" in registry[stage]["options"]:
         parts += ["--lang", option_value(lang, "lang")]
     return " ".join(parts)
+
+
+def legacy_implement_prompt(entry):
+    """A stored implement command that still carries an option implement no longer accepts."""
+    return entry.get("stage") == "implement" and bool(re.search(r"(?:^|\s)--(?:worktree|base|branch)(?:[=\s]|$)",
+                                                                   str(entry.get("prompt", ""))))
 
 
 def handoff_prompt(registry, host, meta):

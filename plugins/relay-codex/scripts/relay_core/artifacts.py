@@ -19,6 +19,17 @@ def digest(text):
     return hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()
 
 
+def workspace_reference(value):
+    """The issue workspace generation and commits a document or run was written against."""
+    if (not isinstance(value, dict) or set(value) != {"workspace_id", "generation", "initial_base_sha", "base_sha", "head_sha"}
+            or not isinstance(value["workspace_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", value["workspace_id"])
+            or type(value["generation"]) is not int or value["generation"] < 1
+            or any(not isinstance(value[k], str) or not re.fullmatch(r"[a-f0-9]{40,64}", value[k])
+                   for k in ("initial_base_sha", "base_sha", "head_sha"))):
+        raise ValueError("invalid workspace reference")
+    return value
+
+
 def split(text):
     text = normalize(text)
     if BEGIN not in text and END not in text:
@@ -85,6 +96,11 @@ def decode(text, target=None, *, request_id=None):
             raise ValueError("invalid version")
         if not isinstance(metadata["parents"], dict):
             raise ValueError("invalid parents")
+        if "workspace" in metadata:
+            # Optional code generation of the document; records written before workspaces lack it.
+            if metadata["kind"] not in ("intent", "spec", "plan", "brief"):
+                raise ValueError("workspace reference on a non-document record")
+            workspace_reference(metadata["workspace"])
         if metadata["kind"] in ("intent", "brief", "issue") and metadata["parents"]:
             raise ValueError("intent, brief and issue cannot have document parents")
         if metadata["kind"] == "issue" and metadata["version"] != 1:

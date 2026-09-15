@@ -43,6 +43,10 @@ def launch(ctx, item, entry, verified=False):
         return False
     if entry.get("handoff") and not verified and not handoff_current(ctx, item, entry):
         return False
+    if policy.legacy_implement_prompt(entry):
+        entry = regenerate_prompt(ctx, item, entry)
+        if entry is None:
+            return False
     ledger, now = ctx.ledger, ctx.clock()
     session_id = str(uuid.uuid4())
     options = ctx.launcher.claude_support() if entry["host"] == "claude" else ()
@@ -127,10 +131,41 @@ def check_pending_transition(ctx, item, entry):
     return False
 
 
+def regenerate_prompt(ctx, item, entry):
+    """Rebuild a stored implement command once from its number, host and the validated configuration.
+
+    Only the prompt changes; host, model, provenance and the gate stay as they were queued.
+    Returns the updated entry, or None when it cannot be rebuilt (the entry then waits with a reason).
+    """
+    repo_entry = {"path": entry["cwd"]}
+    for candidate in ctx.config["repos"]:
+        try:
+            if configuration.identity(candidate["path"])["root"] == entry["cwd"]:
+                repo_entry = candidate
+                break
+        except RelayError:
+            continue
+    try:
+        text = policy.prompt(ctx.registry, entry["host"], "implement", entry["number"],
+                             configuration.settings(ctx.config, repo_entry), entry["cwd"])
+    except RelayError as exc:
+        gate = "프롬프트 재생성 실패: " + str(exc)
+        if entry.get("gate") != gate:
+            ctx.ledger.set_pending(item, dict(entry, gate=gate))
+            ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry.get("artifact", "-"), "보류", gate)
+        return None
+    stored = ctx.ledger.pending(item)
+    if stored is not None:
+        ctx.ledger.set_pending(item, dict(stored, prompt=text))
+    ctx.log.line(f"{item}: 제거된 implement 옵션이 든 대기 명령을 다시 만들었다: {text}")
+    return dict(entry, prompt=text)
+
+
 def reconcile_pending(ctx):
     # Even processed artifacts and advanced cursors cannot grandfather old commands.
     for item, entry in list(ctx.ledger.data["pending"].items()):
-        check_pending_transition(ctx, item, entry)
+        if check_pending_transition(ctx, item, entry) and policy.legacy_implement_prompt(entry):
+            regenerate_prompt(ctx, item, entry)
 
 
 def judge(ctx, gh, found, item, raw, artifact, settings, head_key=None, repo_entry=None):

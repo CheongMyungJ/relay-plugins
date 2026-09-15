@@ -1,14 +1,15 @@
 import argparse
 import json
+import re
 import shutil
 import sys
 import uuid
 from pathlib import Path
 from . import RelayError
-from . import invocation, repository, publishing, runs, baselines
+from . import invocation, repository, publishing, runs, baselines, workspaces
 from .artifacts import collect, collect_investigations, digest, reference
 from .github import GitHub
-from .state import Store, read_json, storage_root, ignore_runtime
+from .state import IssueIndex, Store, read_json, storage_root, ignore_runtime, local_works, locate, work_roots
 
 REGISTRY_PATH = Path(__file__).resolve().parents[2] / "relay.json"
 
@@ -24,41 +25,96 @@ def inspect(data, registry):
         raise RelayError("input", "Use the dedicated pr command; PRs do not use document state.")
     parsed = invocation.parse(data["stage"], data.get("raw", ""), registry)
     repo = repository.inspect(data.get("cwd", str(Path.cwd())))
-    root = storage_root(repo["root"])
+    root = new_owner_root(repo["root"])
     gh = GitHub(repo["repo"], host=repo["host"])
     found = []
     if parsed["issue"]:
-        for path in (root / ".relay" / "work").glob("*/state.json"):
-            item = read_json(path)
-            if repository.same_repository(item["repository"], repo) and item["issue"] == parsed["issue"]:
-                found.append(item)
+        found = issue_owners(repo, parsed["issue"])
     if data.get("work_id"):
-        store = Store(root, data["work_id"])
-        if not (store.path / "state.json").exists() and parsed["stage"] == "investigate":
-            remote = collect_investigations(gh.comments(parsed["issue"]))
-            if not any(r["meta"]["work_id"] == data["work_id"] for r in remote.values()):
-                raise RelayError("state", "No investigation has this original remote work ID.")
-            state = {"work_id": data["work_id"], "repository": repo, "issue": parsed["issue"], "status": "draft"}
-        else:
+        work_id = data["work_id"]
+        if not isinstance(work_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", work_id):
+            raise RelayError("state", "Invalid work ID.")
+        has_local_state = any(
+            (owner / ".relay" / "work" / work_id / "state.json").exists()
+            for owner in work_roots(repo["root"])
+        )
+        if has_local_state:
+            store = locate(repo["root"], work_id)
             state = store.load()
+        else:
+            remote_ids = remote_work_ids_for(parsed["stage"], gh, parsed["issue"])
+            if work_id not in remote_ids:
+                raise RelayError("selection", "No remote Relay record has the selected work ID.")
+            store = Store(repo["root"], work_id)
+            state = {"work_id": work_id, "repository": repo, "issue": parsed["issue"], "status": "draft"}
         open_resume = parsed["stage"] == state.get("stage") == "open"
         if not repository.same_repository(state["repository"], repo) or (not open_resume and state["issue"] != parsed["issue"]):
             raise RelayError("state", "Explicit work ID belongs to a different repository or issue.")
     elif len(found) > 1:
         raise RelayError("state", "Multiple local work copies exist; inspect and select work_id.")
+    elif found:
+        owner, state = found[0]
+        store = Store(owner, state["work_id"])
     else:
-        remote_ids = set()
-        if not found and parsed["stage"] == "investigate":
-            remote_ids = {r["meta"]["work_id"] for r in collect_investigations(gh.comments(parsed["issue"])).values()}
-            if len(remote_ids) > 1:
-                raise RelayError("selection", "Multiple remote investigation work IDs exist; select work_id: " + ", ".join(sorted(remote_ids)))
-        state = found[0] if found else {"work_id": next(iter(remote_ids)) if remote_ids else uuid.uuid4().hex,
-                                       "repository": repo, "issue": parsed["issue"], "status": "draft"}
+        remote_ids = remote_work_ids_for(parsed["stage"], gh, parsed["issue"])
+        if len(remote_ids) > 1:
+            raise RelayError("selection", "Multiple remote Relay work IDs exist; select work_id: "
+                             + ", ".join(sorted(remote_ids)))
+        work_id = next(iter(remote_ids)) if len(remote_ids) == 1 else None
+        if work_id and (not re.fullmatch(r"[a-zA-Z0-9_-]+", work_id) or (root / ".relay" / "work" / work_id).exists()):
+            work_id = None  # A remote ID already used by other local work never merges the two.
+        state = {"work_id": work_id or uuid.uuid4().hex, "repository": repo, "issue": parsed["issue"], "status": "draft"}
         store = Store(root, state["work_id"])
     with store.lock():
         if (store.path / "state.json").exists():
             state = store.load()
         return inspect_work(data, parsed, repo, root, gh, state, store)
+
+
+def new_owner_root(root):
+    """New work lives with the normal main worktree, so every connected checkout finds it."""
+    try:
+        return repository.main_worktree(root)
+    except RelayError:
+        return storage_root(root)
+
+
+def issue_owners(repo, issue):
+    """The unique owner of an issue's work: the workspace index first, then connected worktree stores."""
+    try:
+        index = IssueIndex(repo["root"], issue)
+        record = index.load() if index.exists() else None
+    except RelayError:
+        record = None
+    if record and repository.same_repository(record, repo):
+        owner = Path(record["owner_root"]).resolve()
+        path = owner / ".relay" / "work" / record["work_id"] / "state.json"
+        if path.exists():
+            return [(owner, read_json(path))]
+        return [(owner, {"work_id": record["work_id"], "repository": repo, "issue": issue, "status": "draft"})]
+    found = local_works(repo["root"], repo, issue)
+    if len(found) > 1:
+        raise RelayError("state", "Multiple local work copies exist; inspect and select work_id: "
+                         + ", ".join(sorted(state["work_id"] for _, state in found)))
+    return found
+
+
+def remote_work_ids(gh, issue):
+    """Work IDs of Relay records on the issue; an unreadable remote leaves the choice to a new ID."""
+    try:
+        records, runs = collect({"body": ""}, gh.comments(issue))
+    except RelayError:
+        return set()
+    return {record["meta"].get("work_id") for record in [*records.values(), *runs.values()]} - {None}
+
+
+def remote_work_ids_for(stage, gh, issue):
+    """Remote work identities eligible for an explicit cold-inspect selection."""
+    if not issue:
+        return set()
+    if stage == "investigate":
+        return {record["meta"]["work_id"] for record in collect_investigations(gh.comments(issue)).values()}
+    return remote_work_ids(gh, issue)
 
 
 def inspect_work(data, parsed, repo, root, gh, state, store):
@@ -73,7 +129,8 @@ def inspect_work(data, parsed, repo, root, gh, state, store):
         state.pop("pending", None)
     if parsed["stage"] == "implement" and state.get("active_run"):
         baselines.for_run(state["runs"][state["active_run"]], parsed["options"].get("basis"))
-        old = state.get("options", {})
+        # Options removed from implement are never carried forward from older state.
+        old = {k: v for k, v in state.get("options", {}).items() if k not in invocation.REMOVED["implement"]}
         for key, value in parsed["options"].items():
             if key in old and old[key] != value:
                 raise RelayError("run", "Options differ from the existing run; resolve the intended resume first.")
@@ -138,6 +195,7 @@ def inspect_work(data, parsed, repo, root, gh, state, store):
     return {"work_id": state["work_id"], "work_path": str(store.path), "repository": repo,
             "input": parsed, "documents": presented(records), "runs": presented(remote_runs), "state": state,
             "kb": kb_field(parsed["stage"], state, repo, records, basis),
+            "workspace": workspaces.summary(store.root, state),
             "investigations": investigations, "investigation_selection_required": parsed["stage"] == "investigate" and len(state.get("investigations", {})) > 1 and not state.get("active_investigation"),
             "source_issue": {"number": state["issue"], "url": issue.get("html_url"), "title": issue.get("title"), "body": issue["body"]} if state["issue"] and not error else None,
             "unmanaged": [{"target": str(c["id"]), "body": c["body"]} for c in comments],
@@ -167,7 +225,7 @@ def kb_field(stage, state, repo, records, basis):
 
 def main():
     parser = argparse.ArgumentParser(description="Relay internal recording helper")
-    parser.add_argument("command", choices=["inspect", "prepare", "publish", "run", "pr", "review", "investigate", "kb"])
+    parser.add_argument("command", choices=["inspect", "workspace", "prepare", "publish", "run", "pr", "review", "investigate", "kb"])
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--work")
     args = parser.parse_args()
@@ -193,12 +251,14 @@ def main():
             if not args.work:
                 raise RelayError("input", "--work is required for this internal command.")
             repo = repository.inspect(Path.cwd())
-            store = Store(repo["root"], args.work)
+            store = locate(repo["root"], args.work)
             with store.lock():
                 state = store.load()
                 repository.ensure_identity(state["repository"], Path.cwd())
                 gh = GitHub(state["repository"]["repo"], host=state["repository"].get("host", "github.com"))
-                if args.command == "investigate":
+                if args.command == "workspace":
+                    result = workspaces.dispatch(store, state, data, gh, registry)
+                elif args.command == "investigate":
                     from .investigation import dispatch
                     result = dispatch(store, state, data, gh)
                 elif state["stage"] == "investigate":

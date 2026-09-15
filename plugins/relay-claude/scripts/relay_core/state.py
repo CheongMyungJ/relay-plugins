@@ -42,9 +42,26 @@ def storage_root(root):
     return root
 
 
+def exclusive(path, message):
+    """A lock file that exists only while its owner runs; a leftover file needs its owner checked."""
+    @contextmanager
+    def held():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("x", encoding="utf-8") as stream:
+                json.dump({"pid": os.getpid(), "host": socket.gethostname()}, stream)
+        except FileExistsError as exc:
+            raise RelayError("locked", message) from exc
+        try:
+            yield
+        finally:
+            path.unlink(missing_ok=True)
+    return held()
+
+
 class Store:
     def __init__(self, root, work_id):
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+", work_id):
+        if not isinstance(work_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", work_id):
             raise RelayError("state", "Invalid work ID.")
         self.root = storage_root(root)
         self.work_id = work_id
@@ -71,6 +88,79 @@ class Store:
             yield
         finally:
             path.unlink(missing_ok=True)
+
+
+def work_roots(root):
+    """State-owning roots of every connected worktree, or only root's owner outside a normal layout."""
+    from .repository import main_worktree, worktrees
+    try:
+        main_worktree(root)
+        trees = worktrees(root)
+    except RelayError:
+        trees = [Path(root)]
+    roots = []
+    for tree in trees:
+        try:
+            owner = storage_root(tree)
+        except (RelayError, OSError, ValueError, KeyError):
+            continue  # A damaged pointer never selects another owner.
+        if owner not in roots:
+            roots.append(owner)
+    return roots
+
+
+def local_works(root, repo, issue):
+    """(owner root, state) for this repository/issue across connected worktrees."""
+    from .repository import same_repository
+    found = []
+    for owner in work_roots(root):
+        for path in sorted((owner / ".relay" / "work").glob("*/state.json")):
+            item = read_json(path)
+            if same_repository(item["repository"], repo) and item.get("issue") == issue:
+                found.append((owner, item))
+    return found
+
+
+def locate(root, work_id):
+    """The Store holding work_id: root's own owner first, then a unique connected worktree owner."""
+    if not isinstance(work_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", work_id):
+        raise RelayError("state", "Invalid work ID.")
+    own = storage_root(root)
+    if (own / ".relay" / "work" / work_id / "state.json").exists():
+        return Store(own, work_id)
+    owners = [owner for owner in work_roots(root) if (owner / ".relay" / "work" / work_id / "state.json").exists()]
+    if len(owners) > 1:
+        raise RelayError("state", "Several connected worktrees hold this work ID; run from its owner.")
+    return Store(owners[0] if owners else own, work_id)
+
+
+class IssueIndex:
+    """One issue's workspace record in the normal main worktree, shared by its connected worktrees."""
+
+    def __init__(self, root, issue):
+        from .repository import main_worktree
+        if type(issue) is not int or issue < 1:
+            raise RelayError("input", "Issue workspaces need a positive issue number.")
+        self.issue = issue
+        self.root = main_worktree(root)
+        self.path = self.root / ".relay" / "workspaces" / "issues" / f"{issue}.json"
+
+    def exists(self):
+        return self.path.exists()
+
+    def load(self):
+        record = read_json(self.path)
+        if record.get("schema") != 1 or record.get("issue") != self.issue:
+            raise RelayError("state", "Issue workspace schema or issue number differs.")
+        return record
+
+    def save(self, record):
+        ignore_runtime(self.root)
+        write_json(self.path, record)
+
+    def lock(self):
+        return exclusive(self.path.with_name(f"{self.issue}.lock.json"),
+                         "Issue workspace is locked; inspect its lock owner before removing it.")
 
 
 def ignore_runtime(root):

@@ -35,6 +35,15 @@ def parents_for(stage, registry, records):
     return result
 
 
+def workspace_reference(store, state, kind):
+    """A document candidate is bound to the issue workspace generation and HEAD it was written in."""
+    if kind not in ("intent", "spec", "plan", "brief"):
+        return None
+    from .workspaces import current
+    found = current(store, state)
+    return found["reference"] if found else None
+
+
 def approval_hash(kind, title, body):
     if kind == "issue":
         return digest(json.dumps({"title": normalize(title), "body": normalize(body)},
@@ -124,6 +133,9 @@ def prepare(store, state, candidate, gh, registry):
                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
     if run_id:
         metadata["run_id"] = run_id
+    workspace = workspace_reference(store, state, kind)
+    if workspace:
+        metadata["workspace"] = workspace
     label = "실행 기록" if run_id else "확정"
     if report_fields.get("held"):
         label += " (보류)"
@@ -146,7 +158,7 @@ def prepare(store, state, candidate, gh, registry):
     frozen = {"request_id": request, "body": rendered, "hash": approval_hash(kind, title, rendered), "body_hash": digest(rendered), "kind": kind,
               "title": title, "target": target, "expected": digest(old) if old else None,
               "parents": parents, "run_id": run_id, "status": "review", "version": version, "evidence_refs": evidence,
-              "next_step": suggestion, **report_fields}
+              "next_step": suggestion, **report_fields, **({"workspace": workspace} if workspace else {})}
     write_json(store.path / "candidate.json", frozen)
     review = review_text(frozen)
     (store.path / "review.md").write_text(review, encoding="utf-8", newline="\n")
@@ -236,6 +248,8 @@ def publish(store, state, authorization, gh, registry):
             run = state.get("runs", {}).get(frozen["run_id"])
             if run is None or execution_hash(run) != frozen["run_hash"]:
                 raise RelayError("run", "Execution facts changed after preparation; prepare the report again.")
+        if workspace_reference(store, state, frozen["kind"]) != frozen.get("workspace"):
+            raise RelayError("stale", "The issue workspace generation or HEAD changed after preparation; prepare again.")
         steps.require_allowed(frozen["kind"], frozen["next_step"])
         state["status"] = "publication_uncertain"
         frozen["status"] = "uncertain"

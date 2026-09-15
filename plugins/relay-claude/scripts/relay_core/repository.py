@@ -28,6 +28,42 @@ def worktrees(root):
     return [Path(field[9:]).resolve() for field in raw.split("\0") if field.startswith("worktree ")]
 
 
+def worktree_entries(root):
+    """Connected worktrees with their checked-out branch (None when detached) and HEAD."""
+    entries = []
+    for field in git_raw(root, "worktree", "list", "--porcelain", "-z").split("\0"):
+        if field.startswith("worktree "):
+            entries.append({"path": Path(field[9:]).resolve(), "head": None, "branch": None})
+        elif entries and field.startswith("HEAD "):
+            entries[-1]["head"] = field[5:]
+        elif entries and field.startswith("branch "):
+            entries[-1]["branch"] = field[7:].removeprefix("refs/heads/")
+    return entries
+
+
+def main_worktree(root):
+    """The normal main worktree that shares root's Git common directory."""
+    common = common_dir(root)
+    trees = worktrees(root)
+    if not trees or not trees[0].is_dir() or common_dir(trees[0]) != common or common != trees[0] / ".git":
+        raise RelayError("state", "Issue workspaces require a normal main worktree and its connected worktrees.")
+    return trees[0]
+
+
+def pinned_tip(root, remote, name, private):
+    """Fetch a remote branch into a private ref; ls-remote and the fetched ref must name one commit."""
+    branch_name(root, name)
+    ref = "refs/heads/" + name
+    lines = git(root, "ls-remote", "--refs", remote, ref).splitlines()
+    sha = next((line.split()[0] for line in lines if line.split()[1] == ref), None)
+    if not sha:
+        raise RelayError("git", "Remote branch does not exist: " + name)
+    git(root, "fetch", "--no-tags", "--no-write-fetch-head", remote, "+" + ref + ":" + private)
+    if git(root, "rev-parse", private) != sha:
+        raise RelayError("stale", "Remote branch moved during fetch; retry the same request.")
+    return sha
+
+
 def branch_name(root, name):
     if not isinstance(name, str) or name.startswith(("-", "refs/")) or re.fullmatch(r"[0-9a-fA-F]{40,64}", name):
         raise RelayError("input", "Use a short branch name, not a revision or SHA.")

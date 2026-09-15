@@ -1,7 +1,7 @@
 """Record and verify execution facts; development commands stay with the host."""
 import uuid
 from pathlib import Path
-from . import RelayError, baselines
+from . import RelayError, baselines, workspaces
 from .repository import git, ensure_identity
 from .state import write_json
 from .publishing import snapshot
@@ -25,35 +25,34 @@ def begin(store, state, data, gh, registry):
     if active and not data.get("new_run"):
         run = runs[active]
         baselines.select(baselines.from_records(records), state["options"].get("basis"), run)
-        options = state["options"]
-        if options.get("branch", run["branch"]) != run["branch"] or options.get("base", run["base"]) != run["base"]:
-            raise RelayError("run", "Requested branch/base differs from the registered execution.")
+        if run.get("workspace"):
+            workspaces.verify_run(store, state, run)
         return run
     if remote_runs and not runs and not data.get("new_run"):
         raise RelayError("run", "Remote execution records exist. Confirm Git state and resume with restore before starting another run.")
-    basis = baselines.select(baselines.from_records(records), state["options"].get("basis"))
+    documents = baselines.from_records(records)
+    basis = baselines.select(documents, state["options"].get("basis"))
+    workspace = workspaces.current(store, state)
+    if workspace is None:
+        raise RelayError("run", "Prepare the issue workspace with workspace ensure before starting a run.")
+    record, generation = workspace["record"], workspace["generation"]
+    baselines.assessed(basis, documents, record)
     proof = records["plan" if basis["kind"] == "formal" else "brief"]
     # Pin the readable proof text plus its suggestion; together they rebuild the proof hash.
     summary, suggestion = proof["body"], proof["next_step"]
     run_id = uuid.uuid4().hex[:12]
-    options = state["options"]
-    root = Path(state["repository"]["root"])
-    remote = state["repository"]["remote"]
-    base = options.get("base")
-    default = gh.api(gh.prefix)["default_branch"]
-    if not base:
-        base = f"{remote}/{default}"
-    sha = git(root, "rev-parse", "--verify", base + "^{commit}")
-    branch = options.get("branch", f"relay/{state['issue']}-{run_id}")
-    if branch == default:
-        raise RelayError("run", "Use a task branch, not the repository default branch.")
-    git(root, "check-ref-format", "--branch", branch)
-    wt = options.get("worktree")
-    path = root.parent / f"{root.name}-relay-{state['issue']}-{run_id}" if wt is True else (Path(state["repository"]["cwd"]) / wt).resolve() if wt else root
-    run = {"run_id": run_id, "status": "planned", "parents": basis["parents"],
+    path = Path(generation["path"])
+    ensure_identity(state["repository"], path)
+    if git(path, "status", "--porcelain", "--untracked-files=all"):
+        raise RelayError("run", "The issue workspace has uncommitted changes; resolve them before a new run.")
+    ref = workspace["reference"]
+    run = {"run_id": run_id, "status": "implementing", "parents": basis["parents"],
            "basis": basis, "basis_summary": summary, "basis_next_step": suggestion,
-           "branch": branch, "base": base, "base_sha": sha,
-           "path": str(path), "repository": state["repository"]["repo"], "drift": [], "tests": [], "holds": []}
+           "branch": generation["branch"], "base": f"{state['repository']['remote']}/{generation['default_branch']}",
+           # base_sha stays the run's starting HEAD; the workspace keeps its own pinned commits.
+           "base_sha": ref["head_sha"], "path": str(path), "repository": state["repository"]["repo"],
+           "workspace": {key: ref[key] for key in ("workspace_id", "generation", "initial_base_sha", "base_sha")},
+           "drift": [], "tests": [], "holds": []}
     if basis["kind"] == "formal":
         run["plan_summary"] = summary
     runs[run_id] = run
@@ -143,7 +142,9 @@ def restore(store, state, data, gh, registry):
     state.setdefault("runs", {})[run["run_id"]] = run
     state["active_run"] = run["run_id"]
     state.setdefault("implementation_targets", {})[run["run_id"]] = record["target"]
-    state["options"] = {"branch": run["branch"], "base": run["base"], "basis": basis["kind"]}
+    # Recorded branch/base stay on the run; they never become invocation options again.
+    kept = {k: v for k, v in state.get("options", {}).items() if k not in ("branch", "base", "worktree")}
+    state["options"] = {**kept, "basis": basis["kind"]}
     store.save(state)
     return run
 
@@ -175,6 +176,8 @@ def checkpoint(store, state, data, gh, registry):
         _, _, records, _ = snapshot(state, gh)
         baselines.current(basis, baselines.from_records(records))
         path = Path(run["path"])
+        if run.get("workspace"):
+            workspaces.verify_run(store, state, run)
         ensure_identity(state["repository"], path)
         branch = git(path, "branch", "--show-current")
         if branch != run["branch"]:

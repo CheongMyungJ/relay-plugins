@@ -248,13 +248,14 @@ relay-dispatch go 13
 | `poll_seconds` | 폴링 간격. 기본 30초, 최소 10초 |
 | `launcher` | `wt`(기본), `tmux`, `dry-run` |
 | `defaults.lang` | 지원 스킬에 전달하는 언어. 기본 `ko` |
-| `worktree_template` | implement의 worktree 경로. 기본 `{parent}/{name}-wt-{issue}` |
 | `repos[].path` | 등록한 로컬 클론의 루트 경로 |
 
-저장소별로 `host`, `model`, `skills`, `auto`, `gated`, `defaults`, `worktree_template`를 덮어쓸 수 있습니다.
-폴링 간격과 런처는 전역 설정입니다. worktree 템플릿은 `{parent}`, `{name}`, `{issue}`만 사용하며 `{issue}`가 필수입니다.
-세션은 등록한 클론에서 시작하고 implement 호출에 생성된 worktree 경로를 전달합니다.
+저장소별로 `host`, `model`, `skills`, `auto`, `gated`, `defaults`를 덮어쓸 수 있습니다.
+폴링 간격과 런처는 전역 설정입니다.
+세션은 등록한 클론에서 시작하고 implement 호출에는 번호와 `--watch`만 전달합니다. 스킬이 이슈 작업공간을 준비합니다.
 디스패처 자체는 브랜치를 바꾸거나 worktree를 만들지 않습니다.
+예전 설정의 `worktree_template`는 더 이상 쓰지 않습니다. 파일은 그대로 두고 `run`·`status`가 경고만 출력하니 필요하면 직접 지우세요.
+제거된 옵션이 든 구형 implement 대기 명령은 실행 전에 저장된 번호·host와 현재 설정으로 한 번 다시 만들어지며, host·model·게이트는 유지됩니다.
 
 `run`은 설정 파일의 변경을 다음 주기에 읽습니다. JSON 또는 설정 검증에 실패하면 직전 설정을 유지하고 로그에 알립니다.
 `dry-run`은 새 탭을 열지 않고 홈의 `launches.jsonl`에 명령을 기록하지만, 폴링과 장부 갱신은 수행합니다.
