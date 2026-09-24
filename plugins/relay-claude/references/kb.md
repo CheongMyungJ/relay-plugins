@@ -12,13 +12,19 @@ An entry is `### <ID> <rule>` with ID `<type>-<32 hex>`, then `유형`, `상태`
 
 ## Lookup
 
-- `lookup {paths[], terms[], ids[], sha?, detail: summary|full, include_inactive?, cursor?, limit?}` → `entries`, `redirects` (absorbed pointers and superseded targets), `glossary` (declared aliases only), `tombstones`, `missing_ids`, `omitted` per type, `truncated`, `next_cursor`, `query_hash`, `kb_present`. A file matches its symbols and ancestor directories, a symbol its file and ancestors, a directory its descendants and ancestors; new paths match ancestors without an existence check. Path-less N and D entries are found by terms. Order: direct IDs, compat C, other C, the rest; then specificity, match count, ID. Cursors bind the query, SHA and KB digest; a changed KB is a conflict.
+- `lookup {paths[], terms[], ids[], sha?, detail: summary|full, include_inactive?, cursor?, limit?}` → `entries`, `redirects` (absorbed pointers and superseded targets), `glossary` (declared aliases only), `tombstones`, `missing_ids`, `omitted` per type, `truncated`, `next_request`, `query_hash`, `kb_present`. A file matches its symbols and ancestor directories, a symbol its file and ancestors, a directory its descendants and ancestors; new paths match ancestors without an existence check. Path-less N and D entries are found by terms. Order: direct IDs, compat C, other C, the rest; then specificity, match count, ID.
 - `fragment {ids[] | path, symbols[], sha?, since?, cursor?}` → symbol sources, change hunks since the confirmed SHA and `<module>` top-level ranges, split by line range with `continued` when a unit exceeds the page.
+
+Every paged response (lookup, fragment, the `kb` fields below, kb PR sections, kb-sync listings and batches) carries `truncated` and `next_request`, null on the last page. To read on, run `next_request.command` in `next_request.cwd` with `next_request.input` as the input file; its cursor carries the whole query. Conditions sent with a cursor must be the same; a changed KB or SHA is a conflict.
+
+```json relay:output
+{"cwd":"<abs-path>","command":"kb","input":{"action":"lookup","cursor":"eJy..."}}
+```
 
 ## What each stage receives
 
-- Document stages (intent, design, plan, brief, investigate): `inspect` returns `kb: {present, counts, how_to_query}`. Look up the work's paths and working terms before drafting.
-- implement: `inspect` and `run begin` return `kb` for the proof document's backtick paths and entry IDs. Look up any other file before its first edit; the `kb_recheck` field of `verified` and `committed` responses covers the paths actually changed and is never stored in the run.
+- Document stages (intent, design, plan, brief, investigate): `inspect` returns `kb: {present, counts, absorbed}`. Look up the work's paths and working terms before drafting.
+- implement: `inspect` and `run begin` return `kb` for the proof document's backtick paths and entry IDs. Look up any other file before its first edit; the `kb_recheck` field of `verified` and `committed` responses covers the paths actually changed, lists in `new_ids` the entries the proof lookup did not match, and is never stored in the run.
 - review: `inspect` returns `kb` for the diff paths and `failure_classes` pages. A finding that contradicts an entry names it in `kb_refs`; prepare accepts only active entries or absorbed entries whose pointer resolves.
 - Without a KB these fields are null and no section below is required.
 

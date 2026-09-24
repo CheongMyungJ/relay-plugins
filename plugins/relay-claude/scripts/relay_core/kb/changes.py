@@ -26,9 +26,9 @@ def fail(message, code="kb"):
 
 def reason(value, label):
     if not isinstance(value, str) or not value.strip() or value != value.strip() or "\n" in value:
-        fail(f"{label} must be one nonempty line.", "budget")
+        fail(f"{label} — expected one nonempty line", "budget")
     if len(value) > REASON_LIMIT:
-        fail(f"{label} exceeds {REASON_LIMIT} characters.", "budget")
+        fail(f"{label} — expected at most {REASON_LIMIT} characters", "budget")
     return value
 
 
@@ -41,56 +41,64 @@ def digest_of(value):
 
 
 def validate(changes):
-    """Shape only: unique op_id, known ops, one mutation per existing ID, reasons within budget."""
+    """Shape only: unique op_id, known ops, one mutation per existing ID, reasons within budget.
+
+    Messages name the field path (`changes.ops[2].op_id — ...`) so a host fixes input without reading code.
+    """
     if not isinstance(changes, dict) or set(changes) - {"ops", "rejected", "classified"}:
-        fail("A change set has ops, rejected and classified.")
+        fail("changes — expected an object with only ops, rejected and classified")
     ops, rejected, classified = changes.get("ops", []), changes.get("rejected", []), changes.get("classified", [])
-    if not all(isinstance(v, list) for v in (ops, rejected, classified)):
-        fail("ops, rejected and classified must be lists.")
+    for name, value in (("ops", ops), ("rejected", rejected), ("classified", classified)):
+        if not isinstance(value, list):
+            fail(f"changes.{name} — expected a list")
     seen, touched = set(), {}
-    for op in ops:
+    for index, op in enumerate(ops):
+        at = f"changes.ops[{index}]"
         if not isinstance(op, dict) or op.get("op") not in OPS:
-            fail("Each op names one of " + ", ".join(OPS))
+            fail(f"{at}.op — expected one of " + ", ".join(OPS))
         key = op.get("op_id")
         if not isinstance(key, str) or not key or key in seen:
-            fail("Each op needs a unique op_id.")
+            fail(f"{at}.op_id — required unique nonempty string")
         seen.add(key)
         kind = op["op"]
+        field = {"update": "id", "supersede": "old", "absorb": "id", "delete": "id", "reconfirm": "ids", "create": None}[kind]
         targets = {"update": [op.get("id")], "supersede": [op.get("old")], "absorb": [op.get("id")], "delete": [op.get("id")],
                    "reconfirm": list(op.get("ids") or []), "create": []}[kind]
         for target in targets:
             if not isinstance(target, str) or not model.ID.match(target):
-                fail(f"{kind} needs full entry IDs ({key}).")
+                fail(f"{at}.{field} — expected full entry IDs for {kind}")
             if target in touched:
-                fail(f"Entry {target} has more than one operation ({touched[target]}, {key}).")
+                fail(f"{at}.{field} — entry {target} already has an operation ({touched[target]})")
             touched[target] = key
         if kind in ("create", "update", "supersede") and not isinstance(op.get("entry"), dict):
-            fail(f"{kind} needs an entry object ({key}).")
+            fail(f"{at}.entry — expected an entry object for {kind}")
         if kind == "absorb" and (not isinstance(op.get("pointer"), str) or not model.POINTER.match(op["pointer"])):
-            fail(f"absorb needs a references/<file>.md#<anchor> pointer ({key}).")
+            fail(f"{at}.pointer — expected references/<file>.md#<anchor>")
         if kind == "reconfirm":
             if not targets:
-                fail(f"reconfirm needs ids ({key}).")
+                fail(f"{at}.ids — required nonempty list of entry IDs")
             evidence = op.get("evidence", {})
             if not isinstance(evidence, dict) or any(not isinstance(v, str) for v in evidence.values()):
-                fail(f"reconfirm evidence maps IDs to text ({key}).")
+                fail(f"{at}.evidence — expected an object mapping IDs to text")
             for value in evidence.values():
-                reason(value, "reconfirm evidence")
+                reason(value, f"{at}.evidence")
         elif "evidence" in op and op["evidence"] is not None:
-            reason(op["evidence"], "evidence")
+            reason(op["evidence"], f"{at}.evidence")
         if "label" in op and not isinstance(op["label"], str):
-            fail("label is display text.")
-    for item in rejected:
+            fail(f"{at}.label — expected display text")
+    for index, item in enumerate(rejected):
+        at = f"changes.rejected[{index}]"
         if not isinstance(item, dict) or set(item) != {"rule", "reason"}:
-            fail("rejected items carry rule and reason.")
-        reason(item["rule"], "rejected rule")
-        reason(item["reason"], "rejected reason")
-    for item in classified:
+            fail(f"{at} — expected an object with exactly rule and reason")
+        reason(item["rule"], at + ".rule")
+        reason(item["reason"], at + ".reason")
+    for index, item in enumerate(classified):
+        at = f"changes.classified[{index}]"
         if not isinstance(item, dict) or set(item) != {"op_id", "existing_id", "verdict", "reason"} or item["verdict"] not in VERDICTS:
-            fail("classified items carry op_id, existing_id, verdict (same/conflict/unrelated) and reason.")
+            fail(f"{at} — expected op_id, existing_id, verdict (same/conflict/unrelated) and reason")
         if item["op_id"] not in seen or not model.ID.match(str(item["existing_id"])):
-            fail("classified refers to an unknown op or entry.")
-        reason(item["reason"], "classification reason")
+            fail(f"{at} — op_id or existing_id names an unknown op or entry")
+        reason(item["reason"], at + ".reason")
     return {"ops": ops, "rejected": rejected, "classified": classified}
 
 

@@ -6,18 +6,38 @@ import sys
 import uuid
 from pathlib import Path
 from . import RelayError
-from . import invocation, repository, publishing, runs, baselines, workspaces
+from . import inputs, invocation, repository, publishing, runs, baselines, workspaces
 from .artifacts import collect, collect_investigations, digest, reference
 from .github import GitHub
 from .state import IssueIndex, Store, read_json, storage_root, ignore_runtime, local_works, locate, work_roots
 
 REGISTRY_PATH = Path(__file__).resolve().parents[2] / "relay.json"
+# Error codes whose recovery procedure lives in references/recovery.md, read only when they occur.
+RECOVERY = {"uncertain": "uncertain", "locked": "locked", "conflict": "conflict", "stale": "stale"}
 
 
 def presented(records):
     """Records as the host reads them; content duplicates body and is not sent."""
     return {key: {field: value for field, value in record.items() if field != "content"}
             for key, record in records.items()}
+
+
+def state_summary(state):
+    """What a session needs from state.json; the full state stays in the file named by state_file."""
+    pending = state.get("pending")
+    last = state.get("last_record")
+    return {
+        "status": state.get("status"), "stage": state.get("stage"), "issue": state.get("issue"),
+        "document_targets": state.get("document_targets", {}), "implementation_targets": state.get("implementation_targets", {}),
+        "investigation_targets": state.get("investigation_targets", {}),
+        "active_run": state.get("active_run"), "active_investigation": state.get("active_investigation"),
+        "runs": {key: run.get("status") for key, run in state.get("runs", {}).items()},
+        "investigations": {key: {field: run.get(field) for field in ("status", "outcome", "publication", "revision")}
+                           for key, run in state.get("investigations", {}).items()},
+        # The frozen body lives in candidate.json; only its identity is repeated here.
+        "pending": {key: pending[key] for key in ("kind", "request_id", "hash", "run_id") if key in pending} if pending else None,
+        "last_record": {key: last.get(key) for key in ("url", "target", "version", "next_step")} if last else None,
+    }
 
 
 def inspect(data, registry):
@@ -192,13 +212,17 @@ def inspect_work(data, parsed, repo, root, gh, state, store):
         except RelayError as exc:
             basis_error = {"code": exc.code, "message": str(exc)}
     store.save(state)
+    # A managed comment is already in documents/runs/investigations (its outer text in before/after);
+    # only comments that are no record's target are sent as raw source material.
+    managed = {str(r["target"]) for r in [*records.values(), *remote_runs.values(), *investigations.values()]}
     return {"work_id": state["work_id"], "work_path": str(store.path), "repository": repo,
-            "input": parsed, "documents": presented(records), "runs": presented(remote_runs), "state": state,
+            "input": parsed, "documents": presented(records), "runs": presented(remote_runs),
+            "state_summary": state_summary(state), "state_file": str(store.path / "state.json"),
             "kb": kb_field(parsed["stage"], state, repo, records, basis),
             "workspace": workspaces.summary(store.root, state),
-            "investigations": investigations, "investigation_selection_required": parsed["stage"] == "investigate" and len(state.get("investigations", {})) > 1 and not state.get("active_investigation"),
+            "investigations": presented(investigations), "investigation_selection_required": parsed["stage"] == "investigate" and len(state.get("investigations", {})) > 1 and not state.get("active_investigation"),
             "source_issue": {"number": state["issue"], "url": issue.get("html_url"), "title": issue.get("title"), "body": issue["body"]} if state["issue"] and not error else None,
-            "unmanaged": [{"target": str(c["id"]), "body": c["body"]} for c in comments],
+            "unmanaged": [{"target": str(c["id"]), "body": c["body"]} for c in comments if str(c["id"]) not in managed],
             "missing_tools": missing, "remote_error": error, "basis": basis, "basis_error": basis_error}
 
 
@@ -212,12 +236,12 @@ def kb_field(stage, state, repo, records, basis):
         if stage != "implement":
             return lookup.counts(kb)
         if active:
-            proof = active.get("basis_summary") or active.get("plan_summary") or ""
+            proof = active.get("basis_summary") or ""
         elif basis:
             proof = records["plan" if basis["kind"] == "formal" else "brief"]["body"]
         else:
             return lookup.counts(kb)
-        return reading.for_document(kb, proof)
+        return reading.for_document(kb, proof, cwd=root)
     except RelayError as exc:
         # A damaged KB is reported with the inspection instead of hiding the documents.
         return {"error": exc.code + ": " + str(exc)}
@@ -229,11 +253,11 @@ def main():
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--work")
     args = parser.parse_args()
+    data = None
     try:
         data = read_json(args.input)
         registry = read_json(REGISTRY_PATH)["skills"]
-        if not isinstance(data, dict):
-            raise RelayError("input", "Input must be a JSON object.")
+        inputs.check(args.command, data)
         if args.command == "review":
             from .review import dispatch
             result = dispatch(data, registry)
@@ -259,21 +283,27 @@ def main():
                 if args.command == "workspace":
                     result = workspaces.dispatch(store, state, data, gh, registry)
                 elif args.command == "investigate":
-                    from .investigation import dispatch
-                    result = dispatch(store, state, data, gh)
+                    from .investigation import command
+                    result = command(store, state, data, gh)
                 elif state["stage"] == "investigate":
                     raise RelayError("input", "Use the dedicated investigate command.")
                 elif args.command == "prepare":
                     result = publishing.prepare(store, state, data, gh, registry)
                 elif args.command == "publish":
                     result = publishing.publish(store, state, data, gh, registry)
-                elif data["action"] == "begin":
-                    result = runs.with_kb("begin", runs.begin(store, state, data, gh, registry), state)
-                elif data["action"] == "restore":
-                    result = runs.restore(store, state, data, gh, registry)
                 else:
-                    result = runs.with_kb(data["action"], runs.checkpoint(store, state, data, gh, registry), state)
+                    action = data["action"]
+                    handler = {"begin": runs.begin, "restore": runs.restore}.get(action, runs.checkpoint)
+                    run = handler(store, state, data, gh, registry)
+                    result = runs.with_kb(action, runs.response(action, run, store), state, run)
         print(json.dumps({"ok": True, "result": result}, ensure_ascii=False, indent=2))
-    except (RelayError, OSError, ValueError, KeyError, TypeError) as exc:
-        print(json.dumps({"ok": False, "error": getattr(exc, "code", "input"), "message": str(exc)}, ensure_ascii=False))
+    except (RelayError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        code = getattr(exc, "code", "input")
+        if isinstance(exc, (KeyError, TypeError, AttributeError)) and not isinstance(exc, RelayError):
+            message = inputs.missing_field(args.command, data, exc)
+        else:
+            message = str(exc)
+        if code in RECOVERY:
+            message += f" Recovery: references/recovery.md#{RECOVERY[code]}"
+        print(json.dumps({"ok": False, "error": code, "message": message}, ensure_ascii=False))
         sys.exit(1)

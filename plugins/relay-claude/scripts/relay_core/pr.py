@@ -232,17 +232,17 @@ def prepare_request(data, repo, gh, store, registry):
     title = data["title"]
     body = Path(data["body_file"]).read_text(encoding="utf-8-sig")
     if not isinstance(title, str) or not title.strip() or len(title) > 256:
-        raise RelayError("input", "Provide a nonempty PR title up to 256 characters.")
+        raise RelayError("input", "pr prepare: title — expected nonempty text up to 256 characters")
     if MARKER.search(body) or "<!-- relay:pr-request" in body:
         raise RelayError("input", "The helper adds the request marker; remove it from the draft.")
     steps.reserved(body)
     if "next_step" not in data:
-        raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
+        raise RelayError("input", "pr prepare: next_step — required; expected object with next and reason (never filled in automatically)")
     suggestion = steps.normalize("pr", data["next_step"])
     constraints = {key: data.get(key, False) for key in ("no_push", "draft_only")}
     draft = data.get("draft", False)
     if type(draft) is not bool or any(type(v) is not bool for v in constraints.values()):
-        raise RelayError("input", "draft, no_push and draft_only must be booleans.")
+        raise RelayError("input", "pr prepare: draft/no_push/draft_only — expected true or false")
     request_id = old["request_id"] if old else uuid.uuid4().hex
     # The suggestion sits before the request marker, inside the existing candidate hash.
     body += "\n\n" + steps.rendered(suggestion) + "\n\n<!-- relay:pr-request " + request_id + " -->\n"
@@ -414,6 +414,10 @@ def update_request(data, repo, gh, store):
         if old["status"] in UNCERTAIN or old["status"] == "recorded":
             return recover(store, old, gh)
         steps.require_allowed("pr", old["next_step"])
+    # Shape first: a missing suggestion fails before any remote read.
+    if "next_step" not in data:
+        raise RelayError("input", "pr update: next_step — required; expected object with next and reason")
+    suggestion = steps.normalize("pr", data["next_step"])
     pull = gh.pull(data["number"])
     if not matching(pull, repo, pull["head"]["ref"], pull["base"]["ref"]):
         raise RelayError("repository", "Only same-repository PR updates are supported.")
@@ -423,9 +427,6 @@ def update_request(data, repo, gh, store):
     body = Path(data["body_file"]).read_text(encoding="utf-8-sig")
     if MARKER.findall(old_body) != MARKER.findall(body):
         raise RelayError("conflict", "Preserve existing request markers in the complete replacement.")
-    if "next_step" not in data:
-        raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
-    suggestion = steps.normalize("pr", data["next_step"])
     # A complete replacement starts from the live body, which already carries the
     # previously generated block. Rebuild and cut exactly that instead of asking the
     # host to edit the generated region by hand, then keep the new suggestion
@@ -437,7 +438,7 @@ def update_request(data, repo, gh, store):
     steps.reserved(head)
     body = head + steps.rendered(suggestion) + "\n\n" + kept if found else head.rstrip("\n") + "\n\n" + steps.rendered(suggestion) + "\n"
     if not isinstance(data["title"], str) or not data["title"].strip() or len(data["title"]) > 256 or len(body) > 65000:
-        raise RelayError("input", "Invalid replacement title/body length.")
+        raise RelayError("input", "pr update: title/body — expected a nonempty title up to 256 characters and a body up to 65,000")
     request = {"schema": 1, "request_id": old["request_id"] if old else uuid.uuid4().hex, "repository": repo, "common_dir": str(store.common),
                "remote_url": gitrepo.git(repo["root"], "remote", "get-url", repo["remote"]), "operation": "update",
                "number": data["number"], "expected_hash": data["expected_hash"], "title": data["title"], "body": body,

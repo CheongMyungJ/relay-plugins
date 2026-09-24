@@ -2,7 +2,8 @@
 
 Units are read from Git objects at one SHA. A unit larger than the remaining budget is
 split by line range and continued on the next page; a response that only says
-"truncated" without a way to read further is never produced.
+"truncated" without a way to read further is never produced. `next_request` carries a
+self-contained cursor (query, SHA, KB digest, position), so it is executable as is.
 """
 import ast
 import re
@@ -170,18 +171,45 @@ def plan(kb, data, objects, sha):
     return units, missing
 
 
-def fragment(kb, data, root, sha):
-    """One page of units; text is joined from `lines`, oversized units continue by line range."""
+QUERY = ("ids", "path", "symbols", "since")
+
+
+def restore(data):
+    """A cursor alone restores the query; query fields sent with it must be the same."""
+    if not data.get("cursor"):
+        return data, None
+    payload = lookup.read_cursor(data["cursor"], "fragment")
+    given = {key: data[key] for key in QUERY if data.get(key) is not None}
+    if any(payload["q"].get(key) != value for key, value in given.items()):
+        raise RelayError("conflict", "Cursor belongs to another fragment query; send the cursor alone or the same query.")
+    return {**data, **payload["q"]}, payload
+
+
+def cursor_sha(data):
+    if data.get("cursor") and data.get("sha") is None:
+        return lookup.read_cursor(data["cursor"], "fragment")["bind"].get("sha")
+    return data.get("sha")
+
+
+def fragment(kb, data, root, sha, request=None, envelope=None):
+    """One page of units; text is joined from `lines`, oversized units continue by line range.
+
+    `request` is the next_request template; by default the generic `kb fragment` call in `root`.
+    `envelope` holds fields that the caller includes in the returned page, so they count
+    toward the page budget before any unit is selected.
+    """
+    data, payload = restore(data)
     objects = Objects(root)
     units, missing = plan(kb, data, objects, sha)
-    query = {"ids": data.get("ids"), "path": data.get("path"), "symbols": data.get("symbols"), "since": data.get("since")}
-    binding = {"query": lookup.query_hash(query), "sha": sha, "kb": layout.digest_of(kb)}
+    query = {key: data.get(key) for key in QUERY}
+    bind = {"sha": sha, "kb": layout.digest_of(kb)}
+    template = request or lookup.request_template(root, "fragment")
     position = (0, 0)
-    if data.get("cursor"):
-        offset = lookup.decode_cursor(data["cursor"], binding)
+    if payload:
+        offset = lookup.check_binding(payload, bind)
         position = (offset // 100000, offset % 100000)
-    result = {"sha": sha, "items": [], "missing_ids": missing, "truncated": False, "next_cursor": None, "warnings": []}
-    result["next_cursor"] = lookup.encode_cursor({**binding, "offset": len(units) * 100000})
+    result = {**(envelope or {}), "sha": sha, "items": [], "missing_ids": missing, "truncated": False, "next_request": None, "warnings": []}
+    result["next_request"] = lookup.next_request(template, lookup.encode_cursor("fragment", query, bind, len(units) * 100000))
     index, line = position
 
     def fits(item):
@@ -228,7 +256,7 @@ def fragment(kb, data, root, sha):
         break
     if index < len(units):
         result["truncated"] = True
-        result["next_cursor"] = lookup.encode_cursor({**binding, "offset": index * 100000 + line})
+        result["next_request"] = lookup.next_request(template, lookup.encode_cursor("fragment", query, bind, index * 100000 + line))
     else:
-        result["next_cursor"] = None
+        result["next_request"] = None
     return result

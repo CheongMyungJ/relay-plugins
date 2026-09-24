@@ -102,7 +102,7 @@ def inspect(data, repo, gh, store, registry):
     store.save(request)
     store.set_current(number, request_id)
     write_json(store.request_path(number, request_id) / "snapshot.json", snapshot)
-    summary = lookup.summary(kb, paths=paths, sha=apply_base)
+    summary = lookup.summary(kb, paths=paths, sha=apply_base, cwd=repo["root"])
     return {"status": "inspected", "request_id": request_id, "request_hash": request["request_hash"],
             "work_path": str(store.request_path(number, request_id)), "pr": {"number": number, "url": pull["html_url"], "state": pull["state"],
             "merged": merged, "head": pull["head"]["ref"], "base": pull["base"]["ref"], "title": pull["title"]},
@@ -148,13 +148,18 @@ def read_page(data, repo, gh, store):
     snapshot = read_json(store.request_path(number, request["request_id"]) / "snapshot.json")
     kb = layout.load(layout.TreeReader(repo["root"], request["apply_base_sha"]))
     items = page_items(request, snapshot, kb, data.get("section"))
-    binding = {"query": hashed([request["request_id"], data.get("section")]), "sha": request["apply_base_sha"], "kb": request["request_hash"]}
+    query = {"request_id": request["request_id"], "pr": number, "section": data.get("section")}
+    bind = {"sha": request["apply_base_sha"], "request": request["request_hash"]}
+    template = lookup.request_template(repo["root"], "inspect", **query)
     position = (0, 0)
     if data.get("cursor"):
-        offset = lookup.decode_cursor(data["cursor"], binding)
+        payload = lookup.read_cursor(data["cursor"], "pr_section")
+        if payload["q"] != query:
+            raise RelayError("conflict", "Cursor belongs to another request, PR or section; query again.")
+        offset = lookup.check_binding(payload, bind)
         position = (offset // 100000, offset % 100000)
     result = {"request_id": request["request_id"], "section": data.get("section"), "items": [], "truncated": False,
-              "next_cursor": lookup.encode_cursor({**binding, "offset": len(items) * 100000})}
+              "next_request": lookup.next_request(template, lookup.encode_cursor("pr_section", query, bind, len(items) * 100000))}
     index, offset = position
     while index < len(items):
         item = dict(items[index])
@@ -187,9 +192,9 @@ def read_page(data, repo, gh, store):
         break
     if index < len(items):
         result["truncated"] = True
-        result["next_cursor"] = lookup.encode_cursor({**binding, "offset": index * 100000 + offset})
+        result["next_request"] = lookup.next_request(template, lookup.encode_cursor("pr_section", query, bind, index * 100000 + offset))
     else:
-        result["next_cursor"] = None
+        result["next_request"] = None
     return result
 
 
@@ -249,7 +254,7 @@ def prepare(data, repo, gh, store):
         fail("request_hash differs; inspect again before preparing.", "stale")
     changes = read_json(Path(data["changes_file"]))
     if "next_step" not in data:
-        fail("Submit the candidate's next_step; it is never filled in automatically.")
+        fail("next_step — required; expected object with next and reason (never filled in automatically)")
     suggestion = steps.normalize("kb", steps.validate(data["next_step"]))
     kb = layout.load(layout.TreeReader(repo["root"], request["apply_base_sha"]))
     check = gates.check(kb, changes, sha=request["apply_base_sha"], root=repo["root"], gh=gh, scope_ids=sorted(request["scope"]),
@@ -300,7 +305,7 @@ def prepare_publish_only(data, request, store):
     folder = store.request_path(request["pr"], request["request_id"])
     candidate = read_json(folder / "candidate.json")
     if "next_step" not in data:
-        fail("Submit the candidate's next_step; it is never filled in automatically.")
+        fail("next_step — required; expected object with next and reason (never filled in automatically)")
     suggestion = steps.normalize("kb", steps.validate(data["next_step"]))
     observed = request.get("observed_head")
     if not observed:

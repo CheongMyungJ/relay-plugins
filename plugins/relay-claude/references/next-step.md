@@ -7,7 +7,7 @@ current skill's own contract for its execution, publication and recovery procedu
 
 Submit exactly these two fields as `next_step`:
 
-```json
+```json relay:next_step
 {"next":"design","reason":"확정된 작업 범위를 구체적인 설계로 정리한다."}
 ```
 
@@ -93,7 +93,7 @@ the revised scope; do not request the same approval again when it already covers
 
 Manual calls and configured dispatcher launches follow their respective execution rules.
 The dispatcher applies the same transition policy before starting a suggested task; its
-settings do not replace the skill's own authorization requirements. See [dispatcher](../docs/dispatcher.md).
+settings do not replace the skill's own authorization requirements. See docs/dispatcher.md in the Relay repository.
 
 If nothing is published, publication fails or only part completes, report the actual state,
 confirmed results and remaining decisions. Do not create an empty comment merely to record

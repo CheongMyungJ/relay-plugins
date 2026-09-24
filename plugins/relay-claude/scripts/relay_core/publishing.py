@@ -120,7 +120,7 @@ def prepare(store, state, candidate, gh, registry):
         kb, kb_reader = reading.worktree_kb(kb_root)
         reading.check_references(kb, kb_reader, body, kind)
     if "next_step" not in candidate:
-        raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
+        raise RelayError("input", "next_step — required; expected object with next and reason (never filled in automatically)")
     suggestion = steps.validate(candidate["next_step"])
     if report_fields.get("held") and suggestion["next"] is not None:
         raise RelayError("input", "A held implementation report requires next_step.next to be null.")
@@ -148,7 +148,7 @@ def prepare(store, state, candidate, gh, registry):
         visible += "\n\n기준 문서:\n" + baseline + "\n"
     if run_id:
         # Include evidence from registered state instead of relying only on prose.
-        visible += "\n\n실행 근거:\n```json\n" + json.dumps(state["runs"][run_id], ensure_ascii=False, indent=2) + "\n```\n"
+        visible += "\n\n실행 근거:\n```json\n" + json.dumps(baselines.published(state["runs"][run_id]), ensure_ascii=False, indent=2) + "\n```\n"
     if evidence:
         visible += "\n\n조사 참고 근거 (문서 부모 아님):\n```json\n" + json.dumps(evidence, ensure_ascii=False, indent=2) + "\n```\n"
     visible += "\n\n" + steps.block(suggestion)

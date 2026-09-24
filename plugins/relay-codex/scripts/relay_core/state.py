@@ -223,6 +223,11 @@ class ReviewStore(PrStore):
         ignore_runtime(self.root)
         self.path.mkdir(parents=True, exist_ok=True)
 
+    def request_path(self, run_id):
+        if not isinstance(run_id, str) or not re.fullmatch(r"[a-f0-9]{32}", run_id):
+            raise RelayError("input", "run_id — expected the review run's 32 lowercase hex characters")
+        return self.path / run_id
+
     def load(self, run_id):
         request = read_json(self.request_path(run_id) / "request.json")
         if request.get("run_id") != run_id or request.get("schema") != 1:

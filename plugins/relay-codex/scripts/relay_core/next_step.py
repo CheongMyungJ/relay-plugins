@@ -92,16 +92,16 @@ def pairs(items):
 def validate(value):
     """Accept exactly {next, reason}; a missing selection is explicit null, never omission."""
     if not isinstance(value, dict):
-        raise RelayError("input", "next_step must be an object with exactly next and reason.")
+        raise RelayError("input", "next_step — expected an object with exactly next and reason")
     if set(value) != {"next", "reason"}:
-        raise RelayError("input", "next_step has exactly the keys next and reason.")
+        raise RelayError("input", "next_step — expected exactly the keys next and reason, got " + ", ".join(sorted(map(str, value))))
     choice, reason = value["next"], value["reason"]
     if choice is not None and (not isinstance(choice, str) or choice not in skills()):
-        raise RelayError("input", "next must be a registered Relay skill name or null.")
+        raise RelayError("input", "next_step.next — expected a registered Relay skill name or null")
     if not isinstance(reason, str) or not reason or reason != reason.strip():
-        raise RelayError("input", "reason must be nonempty text without surrounding whitespace.")
+        raise RelayError("input", "next_step.reason — expected nonempty text without surrounding whitespace")
     if any(character < " " for character in reason):
-        raise RelayError("input", "reason must be a single plain line.")
+        raise RelayError("input", "next_step.reason — expected a single plain line")
     return {"next": choice, "reason": reason}
 
 

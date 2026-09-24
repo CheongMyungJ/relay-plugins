@@ -71,28 +71,35 @@ def validate_basis(basis):
     return copy.deepcopy(basis)
 
 
-def for_run(run, requested=None):
-    basis = run.get("basis")
-    if basis is None:
-        parents = run.get("parents", {})
-        if set(parents) != set(SETS["formal"]) or not isinstance(run.get("plan_summary"), str) or not run["plan_summary"]:
-            raise RelayError("run", "Only current formal runs with a pinned plan can omit basis.")
-        basis = {"kind": "formal", "parents": parents, "proof": parents["plan"]}
-    basis = validate_basis(basis)
+# The pinned proof text stays in the local run; the proof comment already publishes it.
+PRIVATE = ("basis_summary", "plan_summary")
+
+
+def published(run):
+    """The execution evidence a report publishes: the run without its pinned proof text."""
+    return {key: copy.deepcopy(value) for key, value in run.items() if key not in PRIVATE}
+
+
+def for_run(run, requested=None, *, published=False):
+    """Validate a run's pinned basis. Published evidence may omit the pinned text; text that is present must match."""
+    if run.get("basis") is None:
+        raise RelayError("run", "Execution evidence without a pinned basis is no longer supported.")
+    basis = validate_basis(run["basis"])
     if basis["parents"] != run.get("parents"):
         raise RelayError("run", "Run parents differ from execution basis.")
-    if "basis" in run:
+    if "plan_summary" in run:
+        # Formal runs begun before the pinned text left the evidence still carry this copy.
+        if basis["kind"] == "brief":
+            raise RelayError("run", "Brief evidence must not masquerade as a plan.")
+        if run["plan_summary"] != run.get("basis_summary"):
+            raise RelayError("run", "Formal summary differs from the pinned plan.")
+    if not (published and "basis_summary" not in run):
         if not isinstance(run.get("basis_summary"), str) or not run["basis_summary"]:
             raise RelayError("run", "Execution basis summary is missing.")
-        if basis["kind"] == "formal" and run.get("plan_summary") != run["basis_summary"]:
-            raise RelayError("run", "Formal summary differs from the pinned plan.")
-        if basis["kind"] == "brief" and "plan_summary" in run:
-            raise RelayError("run", "Brief evidence must not masquerade as a plan.")
+        if basis["proof"]["hash"] not in proof_hashes(run["basis_summary"], run.get("basis_next_step")):
+            raise RelayError("run", "Pinned summary hash differs from execution proof.")
     if requested is not None and requested != basis["kind"]:
         raise RelayError("run", "Requested basis differs from the registered execution.")
-    summary = run.get("basis_summary") if "basis" in run else run["plan_summary"]
-    if basis["proof"]["hash"] not in proof_hashes(summary, run.get("basis_next_step")):
-        raise RelayError("run", "Pinned summary hash differs from execution proof.")
     return basis
 
 

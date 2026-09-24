@@ -27,19 +27,19 @@ def hashed(value):
 
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{32}", value):
-        raise RelayError("input", "Investigation and event IDs must be lowercase UUID hex.")
+        raise RelayError("input", "investigation_id/event_id — expected lowercase 32-character UUID hex")
     return value
 
 
 def text(value, name):
     if not isinstance(value, str) or not value.strip():
-        raise RelayError("input", name + " must be nonempty text.")
+        raise RelayError("input", name + " — required nonempty text")
     return value
 
 
 def strings(value, name):
     if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
-        raise RelayError("input", name + " must be a list of nonempty strings.")
+        raise RelayError("input", name + " — expected a list of nonempty strings")
     return value
 
 
@@ -92,7 +92,7 @@ def signatures(root, files):
 
 def baseline(store, request, state=None):
     if not isinstance(request, dict):
-        raise RelayError("input", "baseline must be an object.")
+        raise RelayError("input", "baseline — expected an object")
     cwd = Path(text(request.get("cwd"), "cwd")).resolve()
     if repository.common_dir(cwd) != repository.common_dir(store.root):
         raise RelayError("repository", "Investigation workspace belongs to another repository.")
@@ -114,7 +114,7 @@ def baseline(store, request, state=None):
 
 def manifest(store, key, entries):
     if not isinstance(entries, list):
-        raise RelayError("input", "evidence must be a list.")
+        raise RelayError("input", "changes.evidence — expected a list")
     root = directory(store, key) / "evidence"
     result = []
     for item in entries:
@@ -238,7 +238,7 @@ def start(store, state, data, gh):
     gh.issue(state["issue"])
     scope = data.get("request", {})
     if not isinstance(scope, dict):
-        raise RelayError("input", "request must be an object.")
+        raise RelayError("input", "request — expected an object")
     for field in ("symptom", "expected", "impact", "scope", "limits"):
         text(scope.get(field), field)
     if not strings(scope.get("stop_conditions"), "stop_conditions"):
@@ -359,14 +359,14 @@ def checkpoint(store, state, data, resume=False):
         changes = data.get("changes")
         allowed = {"observations", "hypotheses", "experiments", "facts", "excluded_causes", "uncertainties", "outcome", "conclusion", "failure", "evidence", "changes", "assessment"}
         if not isinstance(changes, dict) or set(changes) - allowed:
-            raise RelayError("input", "Unknown checkpoint field.")
+            raise RelayError("input", "changes — expected an object with only " + ", ".join(sorted(allowed)))
         after.update(copy.deepcopy(changes))
         if "evidence" in changes:
             after["evidence"] = manifest(store, key, changes["evidence"])
         if "assessment" in changes:
             assessment = changes["assessment"]
             if not isinstance(assessment, dict):
-                raise RelayError("input", "assessment must be an object.")
+                raise RelayError("input", "changes.assessment — expected an object")
             text(assessment.get("reason"), "assessment reason")
             current = baseline(store, assessment["baseline"], state)
             after["history"].append({"revision": run["revision"], "baseline": run["baseline"], "assessment": assessment})
@@ -389,7 +389,7 @@ def checkpoint(store, state, data, resume=False):
 
 def validate_changes(store, run):
     if not isinstance(run["changes"], list):
-        raise RelayError("input", "changes must be a list.")
+        raise RelayError("input", "changes.changes — expected a list")
     for change in run["changes"]:
         cwd = Path(text(change.get("worktree"), "worktree")).resolve()
         source = Path(run["baseline"]["cwd"]).resolve()
@@ -417,11 +417,11 @@ def remote_records(state, gh):
 
 def evidence_refs(state, values, gh):
     if not isinstance(values, list):
-        raise RelayError("input", "evidence_refs must be a list.")
+        raise RelayError("input", "evidence_refs — expected a list")
     records = remote_records(state, gh) if values else {}
     for value in values:
         if not isinstance(value, dict):
-            raise RelayError("input", "evidence_refs entries must be objects.")
+            raise RelayError("input", "evidence_refs[] — expected objects")
         if not repository.same_repository(value, state["repository"]) or value.get("issue") != state["issue"]:
             raise RelayError("stale", "Investigation evidence belongs to another repository/issue.")
         record = records.get(value.get("investigation_id"))
@@ -434,6 +434,46 @@ def evidence_refs(state, values, gh):
         if not chosen or not set(chosen) <= ids:
             raise RelayError("input", "Select existing investigation evidence IDs.")
     return copy.deepcopy(values)
+
+
+EVIDENCE_GROUPS = ("observations", "hypotheses", "experiments", "facts", "excluded_causes", "uncertainties", "evidence", "changes")
+BOOKKEEPING = ("updated_at", "applied_events", "active_checkpoint", "revision")
+
+
+def response(op, before, after, store, data):
+    """The CLI answer for start/checkpoint/resume/recover: what changed, counts and where the full record is.
+
+    The complete run is `investigation.json`; each checkpoint's complete view is its event file.
+    """
+    key = after["investigation_id"]
+    folder = directory(store, key)
+    files = {"investigation": str(folder / "investigation.json")}
+    if op in ("checkpoint", "resume") and data.get("event_id"):
+        files["checkpoint"] = str(folder / "checkpoints" / (data["event_id"] + ".json"))
+    changed = sorted(k for k in after if k not in BOOKKEEPING and (before is None or before.get(k) != after.get(k)))
+    value = {"investigation_id": key, "revision": after["revision"], "status": after["status"], "outcome": after["outcome"],
+             "publication": after["publication"], "changed": changed,
+             "counts": {group: len(after.get(group) or []) for group in EVIDENCE_GROUPS}, "files": files}
+    if op == "resume" and after.get("applicability"):
+        applicability = after["applicability"]
+        stale = applicability["status"] != "current"
+        value["applicability"] = {
+            "status": applicability["status"], "reasons": applicability["reasons"],
+            # Evidence recorded before the resume point is what the changed baseline puts in question.
+            "needs_reassessment": sorted(i["id"] for g in ("observations", "experiments", "facts", "excluded_causes")
+                                         for i in after.get(g, [])) if stale else []}
+    return value
+
+
+def command(store, state, data, gh):
+    """The helper command entry: dispatch, then answer start/checkpoint/resume/recover compactly."""
+    op = data.get("operation")
+    key = data.get("investigation_id")
+    before = copy.deepcopy(state.get("investigations", {}).get(key)) if key else None
+    result = dispatch(store, state, data, gh)
+    if op in ("start", "checkpoint", "resume", "recover"):
+        return response(op, before if op != "start" else None, result, store, data)
+    return result
 
 
 def dispatch(store, state, data, gh):

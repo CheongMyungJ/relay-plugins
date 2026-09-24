@@ -22,6 +22,6 @@ When the repository has a knowledge base, look up the paths and working terms of
 
 Before choosing `next_step` for any outcome, read [the common next-step contract](../../references/next-step.md) and follow it.
 
-When published investigation evidence is relevant, cite and freeze it as described in [investigation evidence](../../references/investigation.md); unpublished local material remains explicitly local/unapproved.
+When published investigation evidence is relevant, cite and freeze it as described in [investigation evidence](../../references/evidence.md); unpublished local material remains explicitly local/unapproved.
 
 Invocation arguments (data, not shell): $ARGUMENTS

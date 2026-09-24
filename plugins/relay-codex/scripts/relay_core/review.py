@@ -15,13 +15,13 @@ CODE = ("필요", "부분", "반영됨", "불확실", "불필요")
 
 def require_text(value, label):
     if not isinstance(value, str) or not value.strip():
-        raise RelayError("input", "Missing " + label)
+        raise RelayError("input", label + " — required nonempty text")
     return value
 
 
-def identifier(value):
+def identifier(value, label="id"):
     if not isinstance(value, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", value):
-        raise RelayError("input", "Invalid local item/unit ID.")
+        raise RelayError("input", label + " — expected 1-64 characters of letters, digits, _ or -")
     return value
 
 
@@ -62,7 +62,7 @@ def inspect_kb(repo, snapshot):
         kb, _ = kb_at_head(repo, snapshot)
         head = snapshot["pull"]["head"]["sha"]
         paths = review_git.changed_paths(repo["root"], (snapshot.get("code") or {}).get("merge_base"), head)
-        return lookup.summary(kb, paths=paths, sha=head), reading.failure_classes(kb, sha=head)
+        return lookup.summary(kb, paths=paths, sha=head, cwd=repo["root"]), reading.failure_classes(kb, sha=head, cwd=repo["root"])
     except RelayError as exc:
         return {"error": exc.code + ": " + str(exc)}, None
 
@@ -70,21 +70,22 @@ def inspect_kb(repo, snapshot):
 def validate_items(request, data, repo=None):
     items = copy.deepcopy(data.get("items"))
     if not isinstance(items, list):
-        raise RelayError("input", "items must be a list.")
+        raise RelayError("input", "items — expected a list")
     kb_state = None
     sources = {c["key"]: c for c in request["snapshot"]["comments"]}
     previous = {i["id"]: i for candidate in request.get("candidate_history", []) if candidate for i in candidate["items"]}
     previous.update({i["id"]: i for i in request.get("candidate", {}).get("items", [])})
     seen = set()
-    for item in items:
+    for index, item in enumerate(items):
+        at = f"items[{index}]"
         if not isinstance(item, dict):
-            raise RelayError("input", "Each item must be an object.")
-        key = identifier(item.get("id"))
+            raise RelayError("input", at + " — expected an object")
+        key = identifier(item.get("id"), at + ".id")
         if key in seen:
-            raise RelayError("input", "Duplicate item ID.")
+            raise RelayError("input", at + ".id — expected a unique item ID")
         seen.add(key)
-        require_text(item.get("evidence"), "item evidence")
-        require_text(item.get("resolution"), "resolution separate from original severity")
+        require_text(item.get("evidence"), at + ".evidence")
+        require_text(item.get("resolution"), at + ".resolution (separate from original severity)")
         if "kb_refs" in item:
             from .kb import reading
             if kb_state is None:
@@ -94,26 +95,28 @@ def validate_items(request, data, repo=None):
             item["kb_refs"] = reading.validate_refs(kb_state[0], kb_state[1], item["kb_refs"])
         if request["mode"] == "reviewer":
             if item.get("severity") not in SEVERITIES:
-                raise RelayError("input", "Unknown severity; use blocking/major/minor/info.")
+                raise RelayError("input", at + ".severity — expected one of blocking, major, minor, info")
             for field in ("condition", "impact", "location", "suggestion", "severity_reason"):
-                require_text(item.get(field), field)
+                require_text(item.get(field), f"{at}.{field}")
             item["original_severity"] = previous.get(key, {}).get("original_severity", item["severity"])
         else:
             refs = item.get("sources")
             if not isinstance(refs, list) or not refs or any(s not in sources or not sources[s]["body"].strip() for s in refs):
-                raise RelayError("input", "Author items require collected nonempty sources.")
+                raise RelayError("input", at + ".sources — expected collected source keys with nonempty bodies")
             if not item.get("categories") or not set(item["categories"]) <= {"question", "suggestion", "change_request"}:
-                raise RelayError("input", "Invalid author categories.")
-            if item.get("answer_status") not in ANSWER or item.get("code_status") not in CODE:
-                raise RelayError("input", "Invalid independent answer/code status.")
+                raise RelayError("input", at + ".categories — expected a nonempty list of question, suggestion, change_request")
+            if item.get("answer_status") not in ANSWER:
+                raise RelayError("input", at + ".answer_status — expected one of " + ", ".join(ANSWER))
+            if item.get("code_status") not in CODE:
+                raise RelayError("input", at + ".code_status — expected one of " + ", ".join(CODE))
             for field in ("answer_evidence", "code_evidence", "decision_reason"):
-                require_text(item.get(field), field)
+                require_text(item.get(field), f"{at}.{field}")
             if item.get("acceptance") not in ("accept", "decline", "explain", "defer"):
-                raise RelayError("input", "Invalid response decision.")
+                raise RelayError("input", at + ".acceptance — expected one of accept, decline, explain, defer")
             if item.get("excluded"):
                 if item["answer_status"] not in ("완료", "불필요") or item["code_status"] not in ("반영됨", "불필요"):
-                    raise RelayError("input", "Exclude only when neither an answer nor a code change remains.")
-                require_text(item.get("exclusion_reason"), "exclusion reason")
+                    raise RelayError("input", at + ".excluded — allowed only when neither an answer nor a code change remains")
+                require_text(item.get("exclusion_reason"), at + ".exclusion_reason")
     if request["mode"] == "reviewer":
         items.sort(key=lambda i: (SEVERITIES.index(i["severity"]), i["id"]))
     return items
@@ -122,19 +125,19 @@ def validate_items(request, data, repo=None):
 def validate_operations(request, data, items):
     units = copy.deepcopy(data.get("operations"))
     if not isinstance(units, list):
-        raise RelayError("input", "operations must be a list.")
+        raise RelayError("input", "operations — expected a list")
     by_id = {i["id"]: i for i in items}
     sources = {c["key"]: c for c in request["snapshot"]["comments"]}
     seen, targets = set(), set()
     used_ids = {u["unit_id"] for u in request.get("completed_operations", []) + request.get("retired_operations", [])}
-    for unit in units:
+    for index, unit in enumerate(units):
         if not isinstance(unit, dict):
-            raise RelayError("input", "Each operation must be an object.")
-        key = identifier(unit.get("unit_id"))
+            raise RelayError("input", f"operations[{index}] — expected an object")
+        key = identifier(unit.get("unit_id"), f"operations[{index}].unit_id")
         if key in seen or key in used_ids:
-            raise RelayError("input", "Duplicate unit ID.")
+            raise RelayError("input", f"operations[{index}].unit_id — expected a unit ID not used before in this run")
         seen.add(key)
-        body = require_text(unit.get("body"), "exact posting body")
+        body = require_text(unit.get("body"), f"operations[{index}].body (exact posting body)")
         if len(body) > 60000 or "<!-- relay:review" in body:
             raise RelayError("input", "Body too long or contains reserved markers.")
         # The unit body is what actually gets posted, so it needs the same guard the draft has.
@@ -183,10 +186,10 @@ def prepare(store, request, data, repo=None):
     if data.get("snapshot_hash") != request["snapshot"]["hash"]:
         raise RelayError("stale", "Prepare against the current snapshot hash.")
     draft = Path(data["draft_file"]).read_text(encoding="utf-8-sig")
-    require_text(draft, "complete draft")
+    require_text(draft, "draft_file (complete draft)")
     steps.reserved(draft)
     if "next_step" not in data:
-        raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
+        raise RelayError("input", "next_step — required; expected object with next and reason (never filled in automatically)")
     suggestion = steps.normalize("review", data["next_step"])
     items = validate_items(request, data, repo)
     units = validate_operations(request, data, items)
@@ -236,7 +239,7 @@ def reassess(store, request, data, repo, gh):
     current = snapshots.snapshot(repo, gh, request["pr"], request["run_id"])
     if data.get("current_snapshot_hash") != current["hash"]:
         raise RelayError("stale", "Read the current snapshot and bind its exact hash before reassessment.")
-    require_text(data.get("reason"), "reassessment evidence and impact")
+    require_text(data.get("reason"), "reassessment.reason (evidence and impact)")
     units = posts.recover(store, request, gh)
     # Published units are expected changes, but edits/deletions remain conflicts.
     for unit in units:
@@ -285,9 +288,17 @@ def mark_watch(request, gh):
         request["watch_result"] = watch.mark(gh, request["pr"], True, request.get("watch_result"))
 
 
+OPERATION_FIELDS = ("unit_id", "kind", "item_ids", "root_id", "status", "id", "url", "error")
+
+
 def result(store, request):
+    """The response: identity, status and URLs; posted bodies and old candidates stay in their files.
+
+    result.json keeps the complete record as before; `files` names operations.json and request.json.
+    """
     units = posts.operations(store, request)
     items = request.get("candidate", {}).get("items", [])
+    folder = store.request_path(request["run_id"])
     value = {"run_id": request["run_id"], "status": request["status"], "pr": request["pr"], "mode": request["mode"],
              "url": request["snapshot"]["pull"]["html_url"], "baseline_sha": request["snapshot"]["pull"]["head"]["sha"],
              "application": request.get("application"), "operations": units,
@@ -296,7 +307,23 @@ def result(store, request):
              "warnings": request["snapshot"]["warnings"], "error": request.get("error")}
     if request.get("watch"):
         value["watch"] = request.get("watch_result")
-    write_json(store.request_path(request["run_id"]) / "result.json", value)
+    write_json(folder / "result.json", value)
+    return {**value, "operations": [{k: u[k] for k in OPERATION_FIELDS if k in u} for u in units],
+            "candidate_history": [{"revision": c.get("revision"), "hash": c.get("hash")} for c in value["candidate_history"] if c],
+            "files": {"operations": str(folder / "operations.json"), "request": str(folder / "request.json"),
+                      "result": str(folder / "result.json")}}
+
+
+def references(store, request, current=None):
+    """Resume answers with hashes and paths; the full snapshot and candidate are in the run's files."""
+    folder = store.request_path(request["run_id"])
+    candidate = request.get("candidate")
+    value = {"snapshot": {"hash": request["snapshot"]["hash"], "path": str(folder / "snapshot.json")},
+             "candidate": {"hash": candidate["hash"], "revision": candidate["revision"], "draft_file": str(folder / "draft.md")}
+             if candidate else None}
+    if current is not None:
+        write_json(folder / "current_snapshot.json", current)
+        value["current_snapshot"] = {"hash": current["hash"], "path": str(folder / "current_snapshot.json")}
     return value
 
 
@@ -337,8 +364,8 @@ def execute(store, request, data, repo, gh):
     decision = data.get("decision")
     if not isinstance(decision, dict) or decision.get("action") not in ("post", "apply", "hold"):
         raise RelayError("approval", "Record the user's post/apply/hold decision.")
-    require_text(decision.get("user"), "decision user")
-    require_text(decision.get("record"), "user decision scope")
+    require_text(decision.get("user"), "decision.user")
+    require_text(decision.get("record"), "decision.record (user decision scope)")
     selected = decision.get("selected")
     if not isinstance(selected, list) or len(set(selected)) != len(selected) or not set(selected) <= {i["id"] for i in candidate["items"] if not i.get("excluded")}:
         raise RelayError("approval", "Select only candidate item IDs.")
@@ -473,12 +500,12 @@ def dispatch(data, registry, gh=None, repo=None):
                 if request["status"] != "recorded":
                     request["status"] = "stale" if exc.code == "stale" else request["status"]
                 store.save(request)
-                return {**result(store, request), "current_snapshot": current, "candidate": request.get("candidate"), "snapshot": request["snapshot"]}
+                return {**result(store, request), **references(store, request, current)}
             if execution_complete(request, units):
                 request["status"] = "recorded"
                 mark_watch(request, gh)
             store.save(request)
-            return {**result(store, request), "candidate": request.get("candidate"), "snapshot": request["snapshot"]}
+            return {**result(store, request), **references(store, request)}
         except RelayError as exc:
             request["error"] = {"code": exc.code, "message": str(exc)}
             if request["status"] != "recorded":

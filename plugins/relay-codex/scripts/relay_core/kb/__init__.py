@@ -22,11 +22,13 @@ def generic(action, data, repo, gh):
     from . import layout, lookup, fragment as fragments, gates, changes as changeset
     sha = data.get("sha")
     if sha is not None and not isinstance(sha, str):
-        raise RelayError("input", "sha must be a commit SHA string.")
+        raise RelayError("input", "kb: sha — expected a commit SHA string")
     if action == "lookup":
+        sha = lookup.cursor_sha(data)  # a cursor alone reads the tree its page was made from
         kb = layout.load(reader_for(repo, sha))
-        return lookup.lookup(kb, data, sha=sha, repo=repo["repo"])
+        return lookup.lookup(kb, data, sha=sha, repo=repo["repo"], cwd=repo["root"])
     if action == "fragment":
+        sha = fragments.cursor_sha(data)
         if not sha:
             sha = gitrepo.git(repo["root"], "rev-parse", "HEAD")
         kb = layout.load(reader_for(repo, sha))
@@ -51,7 +53,7 @@ def generic(action, data, repo, gh):
         return {"status": "rendered", "written": written, "warnings": rendered["warnings"]}
     if action == "check":
         if not sha:
-            raise RelayError("input", "check needs the fixed sha the change set was written against.")
+            raise RelayError("input", "kb check: sha — required; expected the fixed SHA the change set was written against")
         kb = layout.load(reader_for(repo, sha))
         result = gates.check(kb, data.get("changes"), sha=sha, root=repo["root"], gh=gh, scope_ids=data.get("scope") or [],
                              checked=data.get("checked"), execution_id=data.get("execution_id") or "check", batch_id=data.get("batch_id"),
@@ -63,7 +65,7 @@ def generic(action, data, repo, gh):
     if action == "apply":
         plan_value, worktree, record = data.get("plan"), data.get("worktree"), data.get("record")
         if not isinstance(plan_value, dict) or not worktree or not record:
-            raise RelayError("input", "apply needs the frozen plan, the worktree and a record path.")
+            raise RelayError("input", "kb apply: plan, worktree, record — required; expected the frozen plan object, a worktree path and a record path")
         kb = layout.load(reader_for(repo, plan_value.get("sha")))
         replay, files, _ = changeset.plan(kb, data.get("changes"), plan_value["sha"], reader_for(repo, plan_value["sha"]),
                                           execution_id=plan_value["execution_id"], scope=plan_value["scope"], batch_id=plan_value.get("batch_id"),
@@ -72,13 +74,13 @@ def generic(action, data, repo, gh):
         if replay["digest"] != plan_value["digest"] or replay["post_tree"] != plan_value["post_tree"]:
             raise RelayError("conflict", "Change set or KB content differs from the frozen plan.")
         return changeset.apply(replay, files, worktree, Path(record))
-    raise RelayError("input", "Unknown kb action.")
+    raise RelayError("input", "kb: action — expected one of " + ", ".join(ACTIONS))
 
 
 def dispatch(data, registry, gh=None, repo=None):
     action = data.get("action")
     if action not in ACTIONS:
-        raise RelayError("input", "Unknown kb action.")
+        raise RelayError("input", "kb: action — expected one of " + ", ".join(ACTIONS))
     if data.get("cursor") and any(data.get(k) for k in ("changes", "changes_file", "raw")) and action in ("inspect", "batch"):
         raise RelayError("input", "Do not mix a page read with new collection or batch selection.")
     repo = repo or gitrepo.inspect(data.get("cwd", str(Path.cwd())))

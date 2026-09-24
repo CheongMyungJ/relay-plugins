@@ -98,20 +98,81 @@ def body_for(run):
     return text + "\n" + handoff.body_marker(run["run_id"]) + "\n"
 
 
-def listing_page(run, cursor=None):
+# List fields of a listing item that may be split across pages when one item alone exceeds the budget.
+SPLIT_FIELDS = {"extract": ("symbols", "imports", "numbers"), "refresh": ("changed",)}
+PART = 100000
+
+
+def pieces(item, fields, fits):
+    """The item itself when it fits an empty page, else consecutive parts.
+
+    Each part repeats every scalar field, carries one run of the list fields' elements and
+    `part: {index, of}`; joining the parts of one item in order restores it exactly.
+    """
+    if fits(item):
+        return [item]
+    split = [f for f in fields if isinstance(item.get(f), (list, dict))]
+    scalars = {k: v for k, v in item.items() if k not in split}
+    flat = [(f, key) for f in split for key in (item[f] if isinstance(item[f], dict) else range(len(item[f])))]
+
+    def build(chunk, index=0, of=0):
+        part = dict(scalars, part={"index": index, "of": of})
+        for f in split:
+            part[f] = {} if isinstance(item[f], dict) else []
+        for f, key in chunk:
+            if isinstance(item[f], dict):
+                part[f][key] = item[f][key]
+            else:
+                part[f].append(item[f][key])
+        return {k: part[k] for k in [*item, "part"]}
+
+    if not fits(build([], 99999, 99999)):
+        fail("A listing item's scalar fields alone exceed the page budget.", "length")
+    chunks, current = [], []
+    for element in flat:
+        if current and not fits(build(current + [element], 99999, 99999)):
+            chunks.append(current)
+            current = []
+        if not fits(build([element], 99999, 99999)):
+            fail("A single listing element exceeds the page budget.", "length")
+        current.append(element)
+    chunks.append(current)
+    return [build(chunk, index, len(chunks)) for index, chunk in enumerate(chunks)]
+
+
+def listing_page(run, cursor=None, cwd=None):
+    """One listing page under PAGE_BUDGET; oversized items continue as parts (offset = item*100000+part)."""
     items = run["listing"]
-    binding = {"query": "listing", "sha": run["base_sha"], "kb": run["run_id"]}
-    offset = lookup.decode_cursor(cursor, binding) if cursor else 0
-    result = {"run_id": run["run_id"], "items": [], "truncated": False, "next_cursor": lookup.encode_cursor({**binding, "offset": len(items)})}
-    index = offset
+    query, bind = {"run_id": run["run_id"]}, {"sha": run["base_sha"], "run": run["run_id"]}
+    template = lookup.request_template(cwd, "batch", run_id=run["run_id"], list=True)
+    position = 0
+    if cursor:
+        payload = lookup.read_cursor(cursor, "listing")
+        if payload["q"] != query:
+            fail("Cursor belongs to another run's listing.", "conflict")
+        position = lookup.check_binding(payload, bind)
+    tail = lookup.next_request(template, lookup.encode_cursor("listing", query, bind, len(items) * PART))
+    result = {"run_id": run["run_id"], "items": [], "truncated": False, "next_request": tail}
+
+    def fits(value, taken=()):
+        page = dict(result, items=[*taken, value])
+        return lookup.size(page) <= lookup.PAGE_BUDGET
+
+    fields = SPLIT_FIELDS.get(run["mode"], ())
+    index, part = position // PART, position % PART
     while index < len(items):
-        result["items"].append(items[index])
-        if lookup.size(result) > lookup.PAGE_BUDGET and len(result["items"]) > 1:
-            result["items"].pop()
+        parts = pieces(items[index], fields, fits)
+        if part >= len(parts):
+            fail("Cursor offset is outside the listing.")
+        if not fits(parts[part], result["items"]):
             break
-        index += 1
-    result["next_cursor"] = lookup.encode_cursor({**binding, "offset": index}) if index < len(items) else None
-    result["truncated"] = index < len(items)
+        result["items"].append(parts[part])
+        part += 1
+        if part == len(parts):
+            index, part = index + 1, 0
+    done = index >= len(items)
+    result["truncated"] = not done
+    result["next_request"] = None if done else lookup.next_request(template, lookup.encode_cursor("listing", query, bind, index * PART + part))
     return result
 
 
@@ -169,7 +230,7 @@ def begin(data, repo, gh, store, registry):
     store.save(run)
     return {"status": "active", "run_id": run_id, "mode": mode, "base_sha": base_sha, "branch": branch, "worktree": str(path),
             "budget": run["budget"], "targets": len(run["targets"]), "auto": len(run["checked"]),
-            "kb": lookup.counts(kb), "listing": listing_page(run)}
+            "kb": lookup.counts(kb), "listing": listing_page(run, cwd=repo["root"])}
 
 
 def resume_input(options):
@@ -188,7 +249,7 @@ def load_active(store, data):
 def batch(data, repo, gh, store):
     run = load_active(store, data)
     if data.get("list"):
-        return listing_page(run, data.get("cursor"))
+        return listing_page(run, data.get("cursor"), cwd=repo["root"])
     if data.get("cursor") and data.get("batch_id"):
         current = run["batches"].get(data["batch_id"])
         if not current or current["status"] == "done":
@@ -228,36 +289,53 @@ def batch(data, repo, gh, store):
 
 
 def fragments_page(run, current, repo, cursor=None):
+    """A batch's fragments; every continuation names run_id and batch_id so next_request runs as is."""
     kb = layout.load(layout.WorktreeReader(run["worktree"]))
+    template = lookup.request_template(repo["root"], "batch", run_id=run["run_id"], batch_id=current["batch_id"])
     if run["mode"] == "extract":
         files = []
         for key in current["keys"]:
             symbols = current.get("symbols", {}).get(key) or [f for f in run["listing"] if f["path"] == key][0]["symbols"] or []
             files.append({"path": key, "symbols": symbols or None})
-        return combined_fragments(kb, {"files": files}, repo, run["base_sha"], cursor)
-    return fragments.fragment(kb, {"ids": current["keys"], "cursor": cursor}, repo["root"], run["base_sha"])
+        page = combined_fragments(kb, {"files": files}, repo, run["base_sha"], cursor, template)
+    else:
+        if cursor:
+            # The batch's own entry IDs are the query; a cursor from elsewhere is a conflict.
+            payload = lookup.read_cursor(cursor, "fragment")
+            if payload["q"].get("ids") != current["keys"]:
+                fail("Cursor belongs to another batch.", "conflict")
+        page = fragments.fragment(kb, {"ids": current["keys"], "cursor": cursor}, repo["root"], run["base_sha"],
+                                  request=template, envelope={"run_id": run["run_id"], "batch_id": current["batch_id"]})
+    return page
 
 
-def combined_fragments(kb, units, repo, sha, cursor):
+def combined_fragments(kb, units, repo, sha, cursor, template):
     """One page over every batch file's symbol units, paged like fragment.fragment."""
     objects = fragments.Objects(repo["root"])
     all_units = []
     for file in units["files"]:
         all_units.extend(fragments.units_for(objects, sha, file["path"], file["symbols"], None))
-    binding = {"query": lookup.query_hash(units), "sha": sha, "kb": layout.digest_of(kb)}
+    query = {"run_id": template["input"]["run_id"], "batch_id": template["input"]["batch_id"]}
+    bind = {"sha": sha, "kb": layout.digest_of(kb), "units": lookup.query_hash(units)}
     position = (0, 0)
     if cursor:
-        offset = lookup.decode_cursor(cursor, binding)
+        payload = lookup.read_cursor(cursor, "batch")
+        if payload["q"] != query:
+            fail("Cursor belongs to another batch.", "conflict")
+        offset = lookup.check_binding(payload, bind)
         position = (offset // 100000, offset % 100000)
-    result = {"sha": sha, "items": [], "missing_ids": [], "truncated": False, "next_cursor": lookup.encode_cursor({**binding, "offset": len(all_units) * 100000}), "warnings": []}
+    result = {"run_id": query["run_id"], "batch_id": query["batch_id"], "sha": sha, "items": [], "missing_ids": [], "truncated": False,
+              "next_request": lookup.next_request(template, lookup.encode_cursor("batch", query, bind, len(all_units) * 100000)), "warnings": []}
     index, line = position
     while index < len(all_units):
         unit = dict(all_units[index])
         lines = unit.pop("lines", None)
         if lines is None:
             result["items"].append(unit)
-            if lookup.size(result) > lookup.PAGE_BUDGET and len(result["items"]) > 1:
+            if lookup.size(result) > lookup.PAGE_BUDGET:
                 result["items"].pop()
+                if not result["items"]:
+                    fail("A single unit exceeds the page budget.", "length")
                 break
             index += 1
             continue
@@ -288,9 +366,9 @@ def combined_fragments(kb, units, repo, sha, cursor):
         break
     if index < len(all_units):
         result["truncated"] = True
-        result["next_cursor"] = lookup.encode_cursor({**binding, "offset": index * 100000 + line})
+        result["next_request"] = lookup.next_request(template, lookup.encode_cursor("batch", query, bind, index * 100000 + line))
     else:
-        result["next_cursor"] = None
+        result["next_request"] = None
     return result
 
 
@@ -564,7 +642,7 @@ def resume(data, repo, gh, store):
     run["budget"] = {"limit": run["handoff"]["limit"], "used": 0, "calls": run["budget"]["calls"] + 1}
     run["status"] = "active"
     store.save(run)
-    return {**result_for(run), "listing": listing_page(run)}
+    return {**result_for(run), "listing": listing_page(run, cwd=repo["root"])}
 
 
 def changed(run, repo):

@@ -2,11 +2,17 @@
 
 ## Start and workspace
 
-Run inspect with stage implement and workspace ensure ([workflow](workflow.md)). The selected formal (intent/spec/plan) or brief comments must be recorded and current. Start run:
-```json
+Run inspect with stage implement and workspace ensure ([workflow](workflow.md)). The selected formal (intent/spec/plan) or brief comments must be recorded and current; the basis is chosen as in [Execution basis](#execution-basis). Start run:
+
+```text
+python <plugin>/scripts/relay.py run --work <work-id> --input <absolute-run-event.json>
+```
+
+```json relay:run
 {"action":"begin","execution_authorized":true}
 ```
-The helper returns run_id, the issue workspace path and branch, and base_sha (the workspace HEAD when this run starts). Preserve these. Resume an active run rather than calling new_run:true unless a separate execution was explicitly requested.
+
+The helper returns run_id, status, the issue workspace path and branch, base_sha (the workspace HEAD when this run starts), basis_summary once and `files`. Preserve these. Resume an active run rather than calling new_run:true unless a separate execution was explicitly requested.
 
 Develop, check, commit and push only in that path on that branch. Do not reset, rebase, switch or recreate it, and do not copy secrets or uncommitted files from another checkout. A run recorded before issue workspaces keeps its recorded path, branch and base: an older run still in planned status registers {"action":"prepared","run_id":"..."} from its recorded worktree, and nothing moves it. Keep the workspace at completion.
 
@@ -14,12 +20,16 @@ Develop, check, commit and push only in that path on that branch. Do not reset, 
 
 Develop with the host's tools following repo instructions and approved plan. Before the first edit of a file the proof did not name, look up its path with the `kb` helper (see [kb](kb.md)); begin's `kb` field covers the proof's own paths and the verified/committed responses' `kb_recheck` field is a post-hoc check only. Record drift as discovered. The helper's run command records these events:
 
-- {"action":"drift","run_id":"...","entry":{"planned":"...","actual":"...","reason":"...","impact":"...","severity":"major","evidence":"..."}}
-- {"action":"verified","run_id":"...","tests":[{"command":"actual check","exit_code":0,"evidence":"actual output summary or local log path"}]}
-- {"action":"committed","run_id":"..."}
-- {"action":"pushed","run_id":"..."}
-- {"action":"failure","run_id":"...","reason":"specific incomplete step"}
-- {"action":"hold","run_id":"...","entry":{"condition":"scope","detail":"observed restriction","evidence":"basis or observation"}}
+```jsonl relay:run
+{"action":"drift","run_id":"<run-id>","entry":{"planned":"plan text","actual":"what was done","reason":"why","impact":"effect","severity":"major","evidence":"observation"}}
+{"action":"verified","run_id":"<run-id>","tests":[{"command":"actual check","exit_code":0,"evidence":"actual output summary or local log path"}]}
+{"action":"committed","run_id":"<run-id>"}
+{"action":"pushed","run_id":"<run-id>"}
+{"action":"failure","run_id":"<run-id>","reason":"specific incomplete step"}
+{"action":"hold","run_id":"<run-id>","entry":{"condition":"scope","detail":"observed restriction","evidence":"basis or observation"}}
+```
+
+Each event answers with `event`, `recorded` (this event's entry), `status`, `counts`, `failure`, `next_actions` (events the status allows; not a permission) and `files`; earlier drift, holds and tests are in `files.execution`.
 
 Run all required tests before verified. Include every required check; do not omit a failing or unavailable check to advance. Do not fabricate evidence: helper records host-observed results, it does not run the tests. verified pins file content; code changes invalidate it. Recheck upstream before committing and pushing. Only stage files belonging to the task. No blanket git add when user changes exist.
 
@@ -44,7 +54,7 @@ Ordinary work before checks and immediately repairable test failures do not crea
 1. Complete feasible work and checks. Record failed/unavailable checks with failure and other observed hold reasons with hold. Save work_path/runs/<run_id>/report.md with the facts, needed decision and remaining work. Prepare with run_id, body_file and next_step.next=null, then show the full review.md and change.diff locally. Keep commit, push and comment creation/update held until the user decides.
 2. Apply feedback to code and draft. Changed code requires the required checks again; changed drafts require prepare again. If feedback clearly authorizes proceeding with the presented result or publishing that exact candidate, use it as the approval within that scope. Do not ask again while the result and authorization scope are unchanged. If the candidate or scope changes, present it and obtain approval covering the change.
 3. When existing progress conditions are met and the user authorizes proceeding, continue the remaining verified → commit → committed → push → pushed steps, then prepare and publish the completed report. That decision covers commit, push and completed publication together; no repeated report approval is needed.
-4. If conditions remain unmet and the user chooses publication of the current state and an end to follow-up, publish the exact held candidate they approved with next=null. Record their actual decision and remaining work in the draft; a resulting candidate change follows step 2. The same feedback can be the publication approval, without a separate confirmation question. Use the [recording authorization](recording.md) fields to bind that decision to the candidate. Approval never turns failed/unrun checks into passes or overrides host permissions, prohibited Git actions or stale execution bases.
+4. If conditions remain unmet and the user chooses publication of the current state and an end to follow-up, publish the exact held candidate they approved with next=null. Record their actual decision and remaining work in the draft; a resulting candidate change follows step 2. The same feedback can be the publication approval, without a separate confirmation question. Bind that decision to the candidate with the authorization below. Approval never turns failed/unrun checks into passes or overrides host permissions, prohibited Git actions or stale execution bases.
 
 With no feedback, including a dispatcher-opened session, leave the draft, state and workspace intact and end with “보류 중, 게시 없음”, paths and instructions to invoke relay-implement again or use relay-dispatch go --resume. Never substitute an empty comment or automatic publication. A published held record has next=null, so dispatcher closes the tracked session without declaring task success or launching a successor; an unpublished hold must not be described as a remotely observed completion.
 
@@ -54,7 +64,14 @@ Resume the same run with its stored draft, status, failure and holds. Preserve c
 
 Build the report from templates/implementation.md and run facts. With no hold, implementation → required checks → verified → commit → committed → push → pushed → prepare → publish proceeds under the invocation without an approval wait. Choose the report recommendation using the [common next-step contract](next-step.md); the existing complete/held classification and publication authority above remain unchanged.
 
-[Recording](recording.md) defines complete/held classification and publication inputs. Before publishing, honor active user holds and recheck local files. If files changed after prepare, record failure and reprepare. Keep the original request and authorization when recovering an uncertain publication.
+prepare classifies a report complete only for pushed status, a workspace matching the verified tree and no failure; all others are held with next=null and label 실행 기록 (보류). holds is history, not a completion criterion. Completed report authorization uses execution_authorized:true and run_id with the matching request_id/hash; a held report additionally needs approved:true and the actual user:
+
+```jsonl relay:publish
+{"request_id":"<request-id>","hash":"<hash>","execution_authorized":true,"run_id":"<run-id>"}
+{"request_id":"<request-id>","hash":"<hash>","execution_authorized":true,"run_id":"<run-id>","approved":true,"user":"actual approving user"}
+```
+
+Execution authority alone cannot publish a held candidate. Before publishing, honor active user holds and recheck local files. If files changed after prepare, record failure and reprepare. Keep the original request and authorization when recovering an uncertain publication.
 
 For major drift, immediately record a drift event and report reasons, impact and evidence in the conversation. Include it in the same comment at the completed or explicitly approved held publication point. Drift alone is not an approval gate; leave decision as 사람 판단 전 unless the user actually decides. Do not rewrite the plan.
 
@@ -64,12 +81,12 @@ Finish with verification, commit, remote SHA, execution URL, path, drift and inc
 
 ## Execution basis
 
-The registry declares baseline_sets formal=[intent,spec,plan], brief=[brief]. The shared baselines resolver serves inspect, begin, checkpoints and the final handoff; empty requires never bypasses execution checks. For a new execution with no option, a brief without a plan selects brief even when intent/spec exist; inspect retains those documents as reference context. Without brief, formal documents select formal and require the complete current intent/spec/plan chain. A present plan and brief require --basis formal|brief even when the plan is stale or missing parents. Never treat an invalid plan as absent to select brief automatically. Malformed metadata and missing/replaced known documents retain their collection/conflict checks. No documents blocks execution. An explicit selection checks that path and never falls back.
+The registry declares baseline_sets formal=[intent,spec,plan], brief=[brief]. The shared baselines resolver serves inspect, begin, checkpoints and the final handoff; empty requires never bypasses execution checks. For a new execution with no option, a brief without a plan selects brief even when intent/spec exist; inspect retains those documents as reference context. Without brief, formal documents select formal and require the complete current intent/spec/plan chain. A present plan and brief require --basis formal|brief even when the plan is stale or missing parents; an unambiguous natural-language choice may be expressed as the option. Never treat an invalid plan as absent to select brief automatically. Malformed metadata and missing/replaced known documents retain their collection/conflict checks. No documents blocks execution. An explicit selection checks that path and never falls back.
 
-New runs pin basis={kind,parents,proof} and basis_summary. Formal proof is plan and keeps plan_summary; brief proof is brief and never populates plan_summary. Mixed parents or conflicting basis/proof are rejected.
+New runs pin basis={kind,parents,proof} and basis_summary. Formal proof is plan; brief proof is brief. Mixed parents or conflicting basis/proof are rejected.
 
-Resume keeps its basis even if another path later appears. Conflicting basis options fail before returning an active run or restoring it. begin/prepared/verified/committed/pushed and implement→pr validate selected references and parents. Unrelated valid documents or issue-body edits do not stale the selection. Restore reconciles historical Git evidence; it does not authorize new effects against stale documents. Report drift/failure with historical parents. A changed approved basis requires an explicitly requested separate execution after reviewing the resume point.
+Resume keeps its basis even if another path later appears. Conflicting basis options fail before returning an active run or restoring it. begin/prepared/verified/committed/pushed and implement→pr validate selected references and parents. Unrelated valid documents or issue-body edits do not stale the selection. Review investigated HEAD/file differences for applicability without automatically declaring documents stale. Restore reconciles historical Git evidence; it does not authorize new effects against stale documents. Report drift/failure with historical parents. A changed approved basis requires an explicitly requested separate execution after reviewing the resume point.
 
 Code drift remains in the same authorized run with required revalidation. Changed content cannot reuse verified_tree. Resume only unfinished push/publication after a commit, with the original run/request IDs. Major drift is reported promptly without an automatic reapproval or formal-path conversion gate. Read the entire selected proof, including manual checks and explicit exclusions, and record every required check before completion.
 
-Investigation-derived patches remain experimental until reviewed against the approved formal/brief baseline. Preserve origin and verify chosen portions on current code. Do not automatically copy an investigation worktree or treat its outcome as implementation verification.
+Investigation-derived patches follow [evidence](evidence.md).

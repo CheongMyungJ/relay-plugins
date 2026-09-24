@@ -8,25 +8,25 @@ python <plugin>/scripts/relay.py review --input <absolute-request.json>
 
 A session relay-server started (`RELAY_SERVER_CONTEXT` is set) also follows [server](server.md).
 
-Actions are `inspect`, `prepare`, `execute`, `resume`. Inspect PID/host before removing a stale PR lock.
+Actions are `inspect`, `prepare`, `execute`, `resume`.
 
 ## Inspect
 
-```json
+```json relay:review
 {"action":"inspect","raw":"17 --author --lang ko","cwd":"/absolute/repo"}
 ```
 
-Optional PR number is a positive integer. `--watch` is saved on the run and, after the selected execution is recorded, the result carries a `watch` object (`applied`, `assignees`, `warning`, `error`) for the reviewed PR; a marking failure never undoes a posting. Mode flags take no values; identical repeats are allowed, both modes conflict. First prose ends option parsing. `--author 설명` is author plus prose; `--author=설명` is invalid. No URL/repository option. Detached HEAD requires a number. Otherwise select the unique open PR matching current source repository/branch. `selection_required` returns candidates; repeat inspect with `pr` and `selection_reason` after user selection.
+`--watch` is saved on the run and, after the selected execution is recorded, the result carries a `watch` object (`applied`, `error`) for the reviewed PR; a marking failure never undoes a posting. Mode flags take no values; identical repeats are allowed, both modes conflict. First prose ends option parsing. `--author 설명` is author plus prose; `--author=설명` is invalid. No URL/repository option. Detached HEAD requires a number. Otherwise select the unique open PR matching current source repository/branch. `selection_required` returns candidates; repeat inspect with `pr` and `selection_reason` after user selection.
 
-Successful inspect also returns `kb` (entries for the diff paths) and `failure_classes` (active F entries) as bounded pages with cursors; read the remaining pages before finalizing findings. `resume_required` returns pending run IDs/modes/statuses; choose one to resume. Never bypass pending work with a new run. Successful inspect returns `run_id`, `work_path`, `mode`, `selection_reason`, `snapshot` with `hash`. Snapshot includes PR/head/base identity, timestamp, public comments/root IDs, completeness/warnings, explicit same-repository linked issues, Relay documents/execution evidence. Truncation, binary content and fetch errors stay explicit. Supplement with host Git tools. No checkout/index changes occur.
+Successful inspect also returns `kb` (entries for the diff paths) and `failure_classes` (active F entries) as bounded pages with `next_request`. `resume_required` returns pending run IDs/modes/statuses; choose one to resume. Successful inspect returns `run_id`, `work_path`, `mode`, `selection_reason`, `snapshot` with `hash`. No checkout/index changes occur.
 
-General PRs and missing/stale/corrupt/inaccessible Relay evidence support drafting. Document applicability is separate from metadata validity. Closed/merged PRs support drafts only. Incomplete collection permits drafting; publication needs complete comments. Comparison ignores collection time and response ordering.
+General PRs and missing/stale/corrupt/inaccessible Relay evidence support drafting. Closed/merged PRs support drafts only. Incomplete collection permits drafting; publication needs complete comments.
 
 ## Prepare
 
-```json
-{"action":"prepare","cwd":"/absolute/repo","run_id":"32-character-id",
- "snapshot_hash":"returned-hash","draft_file":"/absolute/draft.md",
+```json relay:review
+{"action":"prepare","cwd":"/absolute/repo","run_id":"<run-id>",
+ "snapshot_hash":"<hash>","draft_file":"/absolute/draft.md",
  "items":[{"id":"F1","severity":"major","severity_reason":"Core behavior fails",
    "condition":"Empty input","impact":"Request crashes","location":"app.py:10 @ SHA",
    "evidence":"Observed path and test","suggestion":"Handle input","resolution":"open"}],
@@ -44,8 +44,8 @@ Author inline units use `kind: inline`, numeric top-level `root_id`, `item_ids`,
 
 ## Execute
 
-```json
-{"action":"execute","cwd":"/absolute/repo","run_id":"32-character-id","hash":"candidate-hash",
+```json relay:review
+{"action":"execute","cwd":"/absolute/repo","run_id":"<run-id>","hash":"<hash>",
  "decision":{"action":"post","selected":["F1"],"user":"actual deciding user","record":"Factual decision and scope"}}
 ```
 
@@ -57,20 +57,20 @@ Bodies may use `{{commit}}` and `{{verification}}` for deterministic results wit
 
 ## Resume and reassess
 
-```json
-{"action":"resume","cwd":"/absolute/repo","run_id":"32-character-id"}
+```json relay:review
+{"action":"resume","cwd":"/absolute/repo","run_id":"<run-id>"}
 ```
 
-Resume reads and locally reconciles, without new remote writes. It reports existing commit/status, remote SHA, candidate/snapshot. An interrupted commit is observed, not repeated; supply final checks to execute. Remote equality with registered commit recovers an interrupted push. Unexpected advancement needs reassessment.
+Resume reads and locally reconciles, without new remote writes. It reports existing commit/status, remote SHA, `snapshot {hash, path}` and `candidate {hash, revision, draft_file}`; read those files for full content. An interrupted commit is observed, not repeated; supply final checks to execute. Remote equality with registered commit recovers an interrupted push. Unexpected advancement needs reassessment.
 
-Marker: `<!-- relay:review RUN UNIT -->`. Resume reads the persisted response ID or all pages for the marker and checks body/target/root/author/URL. Exactly one match records success. Zero/multiple matches, edits/deletion or wrong identity stay uncertain/conflict and never resend automatically. Definite rejection is reconciled before failed status; later execute retries only the remaining failed unit. Confirmed history retains IDs/URLs after external edits.
+Resume finds each posted unit by its persisted response ID or marker. Exactly one match records success. Zero/multiple matches, edits/deletion or wrong identity stay uncertain/conflict and never resend automatically. Definite rejection is reconciled before failed status; later execute retries only the remaining failed unit. Confirmed history retains IDs/URLs after external edits.
 
-Compare PR state, source/base, original comments/replies, new comments and linked evidence before execution and every POST. Own confirmed units and registered push are expected changes. Resume returns `current_snapshot` on change. Inspect actual differences, then pass a subsequent resume with:
+Compare PR state, source/base, original comments/replies, new comments and linked evidence before execution and every POST. Own confirmed units and registered push are expected changes. Resume returns `current_snapshot {hash, path}` on change. Inspect actual differences, then resume again with:
 
-```json
-{"reassessment":{"current_snapshot_hash":"observed-current-hash","impact":"unrelated","reason":"Evidence that the exact selected scope and body still apply"}}
+```json relay:review
+{"action":"resume","cwd":"/absolute/repo","run_id":"<run-id>","reassessment":{"current_snapshot_hash":"<hash>","impact":"unrelated","reason":"Evidence that the exact selected scope and body still apply"}}
 ```
 
 `unrelated` keeps candidate/decision and records judgment; code/PR-state changes cannot use it. `impact: revise` resets selection for a new shown candidate, retaining previous candidate/decision and pushed application history. Confirmed operations keep their original IDs/bodies/URLs; pending or definitely rejected units are retired and the new candidate must use fresh unit IDs for remaining work. Uncertain operations and unfinished application/push must be reconciled first. Prepare the revised draft against the returned snapshot and obtain the decision on that changed scope. Do not clear history or switch run IDs to evade conflicts.
 
-`request.json`, `snapshot.json`, `draft.md`, `operations.json`, `result.json` store task evidence, not conversations/credentials. Results contain source/posted URLs, baseline/applied/remote SHAs, tests, excluded/unresolved items and failures. `recorded` means selected execution completed, not every finding resolved.
+Results carry source/posted URLs, baseline/applied/remote SHAs, excluded/unresolved items, failures and `files` (operations.json, request.json, result.json hold the full record). `recorded` means selected execution completed, not every finding resolved.

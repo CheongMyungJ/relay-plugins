@@ -38,17 +38,29 @@ def tree_kb(root, sha):
         raise
 
 
-def for_document(kb, proof_body, *, sha=None, limit=lookup.DEFAULT_LIMIT):
-    """The implement-stage field: entries for the paths and IDs the proof document names."""
+def for_document(kb, proof_body, *, sha=None, limit=lookup.DEFAULT_LIMIT, cwd=None):
+    """The implement-stage field: entries for the paths and IDs the proof document names.
+
+    The queried paths and IDs travel in `next_request`; they are not repeated in the field.
+    """
     paths, ids = lookup.extract_refs(proof_body or "")
-    field = lookup.summary(kb, paths=paths, ids=ids, sha=sha, limit=limit)
-    if field is not None:
-        field["queried"] = {"paths": paths, "ids": ids}
-    return field
+    return lookup.summary(kb, paths=paths, ids=ids, sha=sha, limit=limit, cwd=cwd)
 
 
-def recheck(kb, paths, initial_ids=(), *, sha=None):
-    """After verified/committed: the actual changed paths, and which entries the first lookup missed."""
+def document_ids(kb, proof_body):
+    """Every entry the proof lookup matches on any page."""
+    if not kb["present"]:
+        return []
+    paths, ids = lookup.extract_refs(proof_body or "")
+    return lookup.all_ids(kb, paths=paths, ids=ids)
+
+
+def recheck(kb, paths, initial_ids=(), *, sha=None, cwd=None):
+    """After verified/committed: the actual changed paths, and which entries the first lookup missed.
+
+    `new_ids` compares every entry the changed paths match, not only the first page; the
+    changed paths themselves travel in `next_request`.
+    """
     if not kb["present"] or not paths:
         return None
     clean = []
@@ -57,22 +69,16 @@ def recheck(kb, paths, initial_ids=(), *, sha=None):
             clean.append(model.path(value))
         except RelayError:
             continue
-    field = lookup.summary(kb, paths=clean, sha=sha, limit=lookup.MAX_LIMIT)
-    if field is None:
-        return None
-    returned = [e["id"] for e in field["entries"]] + [r["id"] for r in field["redirects"]]
-    field["new_ids"] = sorted(set(returned) - set(initial_ids))
-    field["paths"] = clean
-    return field
+    new_ids = sorted(set(lookup.all_ids(kb, paths=clean)) - set(initial_ids))
+    return lookup.summary(kb, paths=clean, sha=sha, limit=lookup.MAX_LIMIT, cwd=cwd, extra={"new_ids": new_ids})
 
 
-def failure_classes(kb, *, sha=None):
+def failure_classes(kb, *, sha=None, cwd=None):
+    """Every active F entry, paged like any `kb` field; no F entries keeps the same shape."""
     if not kb["present"]:
         return None
     ids = sorted(k for k, e in kb["entries"].items() if e["type"] == "F" and e["status"] == "active")
-    if not ids:
-        return {"entries": [], "truncated": False, "next_cursor": None}
-    return lookup.summary(kb, ids=ids, sha=sha, limit=lookup.MAX_LIMIT)
+    return lookup.summary(kb, ids=ids, sha=sha, limit=lookup.MAX_LIMIT, cwd=cwd)
 
 
 def references(body):

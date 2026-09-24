@@ -67,7 +67,7 @@ def prepare(store, state, data, gh):
     if run["outcome"] is None:
         raise RelayError("input", "Choose an evidence-supported outcome before preparing publication.")
     if "next_step" not in data:
-        raise RelayError("input", "Submit the candidate's next_step; it is never filled in automatically.")
+        raise RelayError("input", "next_step — required; expected object with next and reason (never filled in automatically)")
     suggestion = steps.validate(data["next_step"])
     if run["outcome"] in ("held", "no_change") and suggestion["next"] is not None:
         raise RelayError("input", "A held or unchanged investigation records next null and waits for the person.")

@@ -31,7 +31,7 @@ def request_id(value):
     if value is None:
         return uuid.uuid4().hex
     if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{32}", value):
-        raise RelayError("input", "request_id must be lowercase 32-character UUID hex.")
+        raise RelayError("input", "workspace: request_id — expected lowercase 32-character UUID hex")
     return value
 
 
@@ -346,9 +346,9 @@ def assess(store, state, data, gh, registry):
     from .artifacts import reference as document_reference
     documents, reason = data.get("documents"), data.get("reason")
     if not isinstance(reason, str) or not reason.strip():
-        raise RelayError("input", "assess needs a nonempty reason.")
+        raise RelayError("input", "workspace assess: reason — required nonempty text")
     if not isinstance(documents, dict) or not documents or set(documents) - set(KINDS):
-        raise RelayError("input", "assess documents map intent/spec/plan/brief to exact references.")
+        raise RelayError("input", "workspace assess: documents — expected an object mapping intent/spec/plan/brief to {target, version, hash}")
     _, _, records, _ = snapshot(state, gh)
     for kind, ref in documents.items():
         if kind not in records or records[kind]["stale"] or document_reference(records[kind]) != ref:

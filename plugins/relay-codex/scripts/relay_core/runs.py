@@ -2,6 +2,7 @@
 import uuid
 from pathlib import Path
 from . import RelayError, baselines, workspaces
+from .artifacts import reference
 from .repository import git, ensure_identity
 from .state import write_json
 from .publishing import snapshot
@@ -14,6 +15,12 @@ HOLD_CONDITIONS = {
     "basis": "기준 문서 변경·누락·stale",
     "git": "Git 충돌·금지된 Git 작업",
 }
+
+# A view of the status transitions checkpoint already enforces; never a permission or approval gate.
+NEXT_ACTIONS = {"planned": ("prepared",), "implementing": ("verified",), "verified": ("verified", "committed"),
+                "committed": ("pushed",), "pushed": ()}
+ALWAYS = ("drift", "failure", "hold")
+SUMMARY_FIELDS = ("run_id", "status", "basis", "branch", "base", "path", "base_sha", "workspace", "commit", "remote_sha")
 
 
 def begin(store, state, data, gh, registry):
@@ -53,12 +60,54 @@ def begin(store, state, data, gh, registry):
            "base_sha": ref["head_sha"], "path": str(path), "repository": state["repository"]["repo"],
            "workspace": {key: ref[key] for key in ("workspace_id", "generation", "initial_base_sha", "base_sha")},
            "drift": [], "tests": [], "holds": []}
-    if basis["kind"] == "formal":
-        run["plan_summary"] = summary
     runs[run_id] = run
     state["active_run"] = run_id
     store.save(state)
+    record_files(store, run)
     return run
+
+
+def record_files(store, run):
+    """The run's full record on disk; responses point here instead of repeating it."""
+    folder = store.path / "runs" / run["run_id"]
+    write_json(folder / "execution.json", run)
+    (folder / "drift.md").write_text("\n\n".join(str(d) for d in run["drift"]) or "drift 없음\n", encoding="utf-8")
+    return files(store, run)
+
+
+def files(store, run):
+    folder = store.path / "runs" / run["run_id"]
+    return {"execution": str(folder / "execution.json"), "drift": str(folder / "drift.md"), "state": str(store.path / "state.json")}
+
+
+def next_actions(run):
+    return [*NEXT_ACTIONS.get(run["status"], ()), *ALWAYS]
+
+
+def counts(run):
+    return {"drift": len(run.get("drift", [])), "holds": len(run.get("holds", [])), "tests": len(run.get("tests", []))}
+
+
+def response(action, run, store):
+    """The CLI answer: what this event recorded, the current status and where the full record lives.
+
+    begin/restore add the run summary and the pinned basis text once; an older run's
+    stored plan_summary copy stays in state and execution.json and is never repeated here.
+    Earlier drift, holds and tests are read from `files`, so responses do not grow per event.
+    """
+    common = {"counts": counts(run), "failure": run.get("failure"), "next_actions": next_actions(run)}
+    if action in ("begin", "restore"):
+        if not (store.path / "runs" / run["run_id"] / "execution.json").is_file():
+            record_files(store, run)
+        summary = {key: run[key] for key in SUMMARY_FIELDS if key in run}
+        return {**summary, **common, "basis_summary": run.get("basis_summary"), "basis_next_step": run.get("basis_next_step"),
+                "files": files(store, run)}
+    recorded = {"drift": lambda: run["drift"][-1], "hold": lambda: run["holds"][-1], "failure": lambda: {"reason": run.get("failure")},
+                "verified": lambda: {"tests": run.get("tests"), "verified_tree": run.get("verified_tree")},
+                "committed": lambda: {"commit": run.get("commit")}, "pushed": lambda: {"remote_sha": run.get("remote_sha")},
+                "prepared": lambda: {}}[action]()
+    return {"run_id": run["run_id"], "status": run["status"], "event": action, "recorded": recorded, **common,
+            "files": files(store, run)}
 
 
 def kb_for_run(run, state, paths=None):
@@ -67,11 +116,10 @@ def kb_for_run(run, state, paths=None):
     root = run["path"] if Path(run.get("path", "")).is_dir() else state["repository"]["root"]
     try:
         kb, _ = reading.worktree_kb(root)
-        first = reading.for_document(kb, run.get("basis_summary") or run.get("plan_summary") or "")
+        proof = run.get("basis_summary") or ""
         if paths is None:
-            return first
-        initial = ([e["id"] for e in first["entries"]] + [r["id"] for r in first["redirects"]]) if first else []
-        return reading.recheck(kb, paths, initial)
+            return reading.for_document(kb, proof, cwd=root)
+        return reading.recheck(kb, paths, reading.document_ids(kb, proof), cwd=root)
     except RelayError as exc:
         return {"error": exc.code + ": " + str(exc)}
 
@@ -103,7 +151,7 @@ def parse_evidence(record, run_id):
     run = json.loads(blocks[0])
     if run["run_id"] != run_id or run_id != record["meta"].get("run_id") or run["parents"] != record["meta"]["parents"]:
         raise RelayError("run", "Execution identity does not match the recorded artifact.")
-    baselines.for_run(run)
+    baselines.for_run(run, published=True)
     return run
 
 
@@ -111,7 +159,7 @@ def restore(store, state, data, gh, registry):
     """Recover a run from its recorded evidence after checking the actual local Git state."""
     if state["stage"] != "implement" or not data.get("execution_authorized"):
         raise RelayError("run", "Authorize resuming the existing execution first.")
-    _, _, _, remote_runs = snapshot(state, gh, historical=True)
+    _, _, records, remote_runs = snapshot(state, gh, historical=True)
     record = remote_runs.get(data["run_id"])
     if not record:
         raise RelayError("run", "No matching remote execution record.")
@@ -119,6 +167,15 @@ def restore(store, state, data, gh, registry):
     if known and known != record["target"]:
         raise RelayError("conflict", "Recovery report differs from its known comment ID.")
     run = parse_evidence(record, data["run_id"])
+    run.pop("plan_summary", None)
+    if "basis_summary" not in run:
+        # The evidence names its proof by exact reference; only that unrevised comment still holds the pinned text.
+        kind = "plan" if run["basis"]["kind"] == "formal" else "brief"
+        proof = records.get(kind)
+        if not proof or reference(proof) != run["basis"]["proof"]:
+            raise RelayError("stale", f"Execution proof {kind} was revised or removed after this run; its pinned text cannot be recovered."
+                             " Keep the report as history or request a separate run on the current basis.")
+        run["basis_summary"] = proof["body"]
     basis = baselines.for_run(run, state.get("options", {}).get("basis"))
     path = Path(data.get("path", run["path"])).resolve()
     ensure_identity(state["repository"], path)
@@ -146,6 +203,7 @@ def restore(store, state, data, gh, registry):
     kept = {k: v for k, v in state.get("options", {}).items() if k not in ("branch", "base", "worktree")}
     state["options"] = {**kept, "basis": basis["kind"]}
     store.save(state)
+    record_files(store, run)
     return run
 
 
@@ -226,19 +284,19 @@ def checkpoint(store, state, data, gh, registry):
             # still-failing run after recovery.
             run.pop("failure", None)
     store.save(state)
-    write_json(store.path / "runs" / run_id / "execution.json", run)
-    (store.path / "runs" / run_id / "drift.md").write_text("\n\n".join(str(d) for d in run["drift"]) or "drift 없음\n", encoding="utf-8")
+    record_files(store, run)
     return run
 
 
-def with_kb(action, run, state):
-    """The helper response for begin/verified/committed: the run plus a KB field that is never stored."""
+def with_kb(action, result, state, run=None):
+    """Add only the KB field to a begin/verified/committed response; it is never stored."""
+    run = run or result
     if action == "begin":
-        return dict(run, kb=kb_for_run(run, state))
+        return dict(result, kb=kb_for_run(run, state))
     if action in ("verified", "committed"):
         # A post-hoc lookup of the paths actually changed; it never replaces the pre-edit lookup.
-        return dict(run, kb_recheck=kb_for_run(run, state, changed_paths(Path(run["path"]), run["base_sha"])))
-    return run
+        return dict(result, kb_recheck=kb_for_run(run, state, changed_paths(Path(run["path"]), run["base_sha"])))
+    return result
 
 
 def tree_signature(path):

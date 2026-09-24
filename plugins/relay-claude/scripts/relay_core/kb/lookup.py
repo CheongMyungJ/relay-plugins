@@ -1,12 +1,15 @@
-"""Path, term and ID lookup with ordering, redirects, budgets and cursors (spec R3).
+"""Path, term and ID lookup with ordering, redirects, budgets and cursors (spec R3; #57 R1).
 
 Every response is measured as the Unicode character count of its ensure_ascii=False JSON.
 A page never exceeds PAGE_BUDGET; the `kb` field other helper results carry never exceeds
-FIELD_BUDGET. Cursors are bound to the query, the base SHA and the KB content digest.
+FIELD_BUDGET. A cursor is self-contained: it carries the normalized query, the values it is
+bound to (KB digest, SHA, run or request identity) and the offset, so `next_request` alone
+reads the next page. A changed KB, SHA or binding is a conflict.
 """
 import base64
 import json
 import posixpath
+import zlib
 from .. import RelayError
 from ..artifacts import digest
 from . import entries as model
@@ -161,27 +164,87 @@ def full_of(entry, reasons, kb):
     return {**model.to_host(entry), "match_reason": reasons, "file": kb["location"].get(entry["id"])}
 
 
-def encode_cursor(payload):
-    return base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii")
+CURSOR_VERSION = 2
+CONDITIONS = ("paths", "terms", "ids", "detail", "include_inactive", "limit")
+OFFSET_WIDTH = 12
 
 
-def decode_cursor(text, expected):
+def encode_cursor(kind, query, bind, offset):
+    """`{"v":2,kind,q,bind}` JSON, zlib-compressed and base64url-encoded without padding, then `.` and
+    the offset in 12 fixed digits.
+
+    The offset stays outside the compressed part so a cursor's length never depends on its
+    offset: the next_request a page measures before filling is exactly as long as the one it
+    ends with, and a page can never exceed its budget by a longer final cursor.
+    """
+    payload = {"v": CURSOR_VERSION, "kind": kind, "q": query, "bind": bind}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii").rstrip("=") + "." + str(offset).zfill(OFFSET_WIDTH)
+
+
+def read_cursor(text, kind):
+    """The cursor payload with its offset; an older plain-base64 cursor is an input error, never reinterpreted."""
+    if not isinstance(text, str) or not text:
+        raise RelayError("input", "cursor — expected the cursor string from next_request")
+    head, dot, digits = text.rpartition(".")
+    if not dot:
+        padded = text + "=" * (-len(text) % 4)
+        try:
+            old = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        except (ValueError, TypeError, UnicodeError):
+            old = None
+        if isinstance(old, dict) and "offset" in old:
+            raise RelayError("input", "cursor from an older helper; query again")
+        raise RelayError("input", "cursor — malformed; query again")
     try:
-        payload = json.loads(base64.urlsafe_b64decode(text.encode("ascii")).decode("utf-8"))
-    except (ValueError, TypeError, AttributeError):
-        raise RelayError("input", "Malformed cursor.")
-    if not isinstance(payload, dict) or {k: payload.get(k) for k in expected} != expected or type(payload.get("offset")) is not int:
-        raise RelayError("conflict", "Cursor belongs to another query, base SHA or KB content; query again.")
+        if len(digits) != OFFSET_WIDTH or not digits.isdigit():
+            raise ValueError("offset")
+        padded = head + "=" * (-len(head) % 4)
+        payload = json.loads(zlib.decompress(base64.urlsafe_b64decode(padded.encode("ascii"))).decode("utf-8"))
+    except (ValueError, TypeError, zlib.error, UnicodeError):
+        raise RelayError("input", "cursor — malformed; query again")
+    if not isinstance(payload, dict) or payload.get("v") != CURSOR_VERSION:
+        raise RelayError("input", "cursor — malformed; query again")
+    payload["offset"] = int(digits)
+    if payload.get("kind") != kind:
+        raise RelayError("conflict", f"Cursor belongs to a {payload.get('kind')} page, not {kind}; query again.")
+    return payload
+
+
+def check_binding(payload, bind):
+    """The KB, SHA and run/request identity a page was made from must still hold."""
+    if payload.get("bind") != bind:
+        raise RelayError("conflict", "Cursor belongs to another base SHA, KB content or run; query again.")
     return payload["offset"]
 
 
-def page(kb, query, *, budget, offset=0, sha=None, repo=None, envelope=None):
-    """Fill one page under the character budget; the result is complete for the page it names."""
+def next_request(template, cursor):
+    """The executable request for the following page: same cwd/command/input plus the cursor."""
+    if cursor is None:
+        return None
+    return {"cwd": template["cwd"], "command": template["command"], "input": {**template["input"], "cursor": cursor}}
+
+
+def request_template(cwd, action="lookup", command="kb", **identity):
+    return {"cwd": str(cwd) if cwd is not None else None, "command": command, "input": {"action": action, **identity}}
+
+
+def conditions(query):
+    return {key: query[key] for key in CONDITIONS}
+
+
+def page(kb, query, *, budget, offset=0, sha=None, repo=None, envelope=None, request=None):
+    """Fill one page under the character budget; the result is complete for the page it names.
+
+    `request` is the next_request template (cwd, command, input without cursor); the
+    largest possible next_request is measured before entries are added.
+    """
     items, tombstones, missing, glossary = candidates(kb, query)
-    binding = {"query": query_hash(query), "kb": layout.digest_of(kb), "sha": sha}
-    result = {"kb_present": kb["present"], "repository": repo, "sha": sha, "query_hash": binding["query"],
-              "kb_digest": binding["kb"], "entries": [], "redirects": [], "glossary": [], "tombstones": tombstones,
-              "missing_ids": missing, "returned_ids": [], "omitted": {}, "truncated": False, "next_cursor": None,
+    bind = {"kb": layout.digest_of(kb), "sha": sha}
+    template = request or request_template(None)
+    result = {"kb_present": kb["present"], "repository": repo, "sha": sha, "query_hash": query_hash(conditions(query)),
+              "kb_digest": bind["kb"], "entries": [], "redirects": [], "glossary": [], "tombstones": tombstones,
+              "missing_ids": missing, "returned_ids": [], "omitted": {}, "truncated": False, "next_request": None,
               "warnings": [], **(envelope or {})}
     # One cursor traverses the prioritized entries, then the glossary explanations.
     # Glossary entries must participate in the same limit and byte-independent budget.
@@ -189,8 +252,8 @@ def page(kb, query, *, budget, offset=0, sha=None, repo=None, envelope=None):
     units += [(entry, [], True) for entry in glossary]
     if not 0 <= offset <= len(units):
         raise RelayError("input", "Cursor offset is outside the lookup results.")
-    # Measure against the largest tail the page can end with: a cursor and every omitted count.
-    result["next_cursor"] = encode_cursor({**binding, "offset": len(units)})
+    # Measure against the largest tail the page can end with: a next_request and every omitted count.
+    result["next_request"] = next_request(template, encode_cursor("lookup", conditions(query), bind, len(units)))
     for entry, _, _ in units[offset:]:
         result["omitted"][entry["type"]] = result["omitted"].get(entry["type"], 0) + 1
     taken = 0
@@ -223,38 +286,59 @@ def page(kb, query, *, budget, offset=0, sha=None, repo=None, envelope=None):
         if taken >= query["limit"]:
             break
     remaining = units[offset + taken:]
-    result["omitted"], result["next_cursor"] = {}, None
+    result["omitted"], result["next_request"] = {}, None
     for entry, _, _ in remaining:
         result["omitted"][entry["type"]] = result["omitted"].get(entry["type"], 0) + 1
     if remaining:
         result["truncated"] = True
-        result["next_cursor"] = encode_cursor({**binding, "offset": offset + taken})
+        result["next_request"] = next_request(template, encode_cursor("lookup", conditions(query), bind, offset + taken))
     if size(result) > budget:
         raise RelayError("length", "Lookup response metadata exceed the page budget; narrow the query.")
     return result
 
 
-def lookup(kb, data, *, sha=None, repo=None):
-    query = normalize_query({**data, "sha": sha})
+def cursor_sha(data):
+    """The SHA a cursor-only request was bound to, so the caller reads the same tree."""
+    if data.get("cursor") and data.get("sha") is None:
+        return read_cursor(data["cursor"], "lookup")["bind"].get("sha")
+    return data.get("sha")
+
+
+def lookup(kb, data, *, sha=None, repo=None, cwd=None):
+    """One page. A cursor alone restores the query; condition fields sent with it must match."""
     offset = 0
     if data.get("cursor"):
-        offset = decode_cursor(data["cursor"], {"query": query_hash(query), "kb": layout.digest_of(kb), "sha": sha})
+        payload = read_cursor(data["cursor"], "lookup")
+        restored = normalize_query({**payload["q"], "sha": sha})
+        given = {key: data[key] for key in CONDITIONS if data.get(key) is not None}
+        if given and conditions(normalize_query({**payload["q"], **given, "sha": sha})) != conditions(restored):
+            raise RelayError("conflict", "Cursor belongs to another query; send the cursor alone or the same conditions.")
+        query = restored
+        offset = check_binding(payload, {"kb": layout.digest_of(kb), "sha": sha})
+    else:
+        query = normalize_query({**data, "sha": sha})
+    template = request_template(cwd)
     if not kb["present"]:
-        return page(kb, query, budget=PAGE_BUDGET, sha=sha, repo=repo)
-    return page(kb, query, budget=PAGE_BUDGET, offset=offset, sha=sha, repo=repo)
+        return page(kb, query, budget=PAGE_BUDGET, sha=sha, repo=repo, request=template)
+    return page(kb, query, budget=PAGE_BUDGET, offset=offset, sha=sha, repo=repo, request=template)
 
 
-def summary(kb, paths=(), terms=(), ids=(), *, budget=FIELD_BUDGET, sha=None, limit=DEFAULT_LIMIT):
-    """The `kb` field for other helper results: None without a KB, else one bounded page."""
+FIELD_KEYS = ("entries", "redirects", "glossary", "tombstones", "missing_ids", "omitted", "truncated", "next_request",
+              "query_hash", "kb_digest", "sha")
+
+
+def summary(kb, paths=(), terms=(), ids=(), *, budget=FIELD_BUDGET, sha=None, limit=DEFAULT_LIMIT, cwd=None, extra=None):
+    """The `kb` field for other helper results: None without a KB, else one bounded page.
+
+    Hidden conditions (a diff's paths, every active F, limit 50) travel inside the cursor of
+    `next_request`, so the session continues without knowing them. `extra` fields are part
+    of the measured field.
+    """
     if not kb["present"]:
         return None
     query = normalize_query({"paths": list(paths), "terms": list(terms), "ids": list(ids), "limit": limit, "sha": sha})
-    hint = "relay.py kb lookup with paths/terms/ids and this cursor"
-    result = page(kb, query, budget=budget, sha=sha, envelope={"how_to_query": hint})
-    keys = ("entries", "redirects", "glossary", "tombstones", "missing_ids", "omitted", "truncated", "next_cursor", "query_hash", "kb_digest", "sha")
-    trimmed = {k: result[k] for k in keys}
-    trimmed["how_to_query"] = hint
-    return trimmed
+    result = page(kb, query, budget=budget, sha=sha, envelope=dict(extra or {}), request=request_template(cwd))
+    return {k: result[k] for k in (*FIELD_KEYS, *(extra or {}))}
 
 
 def counts(kb):
@@ -265,8 +349,14 @@ def counts(kb):
     for entry in kb["entries"].values():
         if entry["status"] == "active":
             active[entry["type"]] = active.get(entry["type"], 0) + 1
-    return {"present": True, "counts": active, "absorbed": sum(1 for e in kb["entries"].values() if e["status"] == "absorbed"),
-            "how_to_query": "relay.py kb lookup with paths=[...] and terms=[...] before drafting"}
+    return {"present": True, "counts": active, "absorbed": sum(1 for e in kb["entries"].values() if e["status"] == "absorbed")}
+
+
+def all_ids(kb, paths=(), terms=(), ids=(), limit=DEFAULT_LIMIT):
+    """Every entry ID a query matches across all pages, for comparisons that must not stop at page one."""
+    query = normalize_query({"paths": list(paths), "terms": list(terms), "ids": list(ids), "limit": limit})
+    items, _, _, _ = candidates(kb, query)
+    return [entry["id"] for entry, _, _ in items]
 
 
 def extract_refs(text):
