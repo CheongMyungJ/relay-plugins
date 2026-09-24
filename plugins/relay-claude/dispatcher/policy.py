@@ -21,18 +21,20 @@ def skill_name(registry, host, stage):
     return registry[stage].get(table["name"]) or registry[stage][table["fallback"]]
 
 
-def prompt(registry, host, stage, number, settings, root=None):
-    """`<prefix><skill> <number> [--reviewer] --watch [--lang x]`.
+def prompt(registry, host, stage, number, settings, root=None, *, watch=True):
+    """`<prefix><skill> <number> [--reviewer] [--watch] [--lang x]`.
 
     Numbers, registered skill names and validated configuration values only. The skill itself
-    prepares the issue workspace, so no path, base or branch travels in the prompt.
+    prepares the issue workspace, so no path, base or branch travels in the prompt. The local
+    dispatcher keeps --watch; relay-server passes watch=False and never edits a built string.
     """
     if type(number) is not int or number < 1:
         raise RelayError("input", "issue or PR number must be a positive integer")
     parts = [HOSTS[host]["prefix"] + skill_name(registry, host, stage), str(number)]
     if stage == "review":
         parts.append("--reviewer")
-    parts.append("--watch")
+    if watch:
+        parts.append("--watch")
     lang = settings.get("defaults", {}).get("lang")
     if lang and "lang" in registry[stage]["options"]:
         parts += ["--lang", option_value(lang, "lang")]
@@ -45,13 +47,14 @@ def legacy_implement_prompt(entry):
                                                                    str(entry.get("prompt", ""))))
 
 
-def handoff_prompt(registry, host, meta):
-    """`<prefix><kb-sync> --resume <run_id> --limit <n> --handoff <round> --watch` from validated metadata only."""
+def handoff_prompt(registry, host, meta, *, watch=True):
+    """`<prefix><kb-sync> --resume <run_id> --limit <n> --handoff <round> [--watch]` from validated metadata only."""
     meta = handoffs.validate(meta)
     if meta["state"] != "paused":
         raise RelayError("input", "only a paused handoff resumes kb-sync")
-    return " ".join([HOSTS[host]["prefix"] + skill_name(registry, host, "kb-sync"), "--resume", meta["run_id"],
-                     "--limit", str(meta["limit"]), "--handoff", str(meta["round"]), "--watch"])
+    parts = [HOSTS[host]["prefix"] + skill_name(registry, host, "kb-sync"), "--resume", meta["run_id"],
+             "--limit", str(meta["limit"]), "--handoff", str(meta["round"])]
+    return " ".join(parts + (["--watch"] if watch else []))
 
 
 def resumes_run(artifact, next_stage):

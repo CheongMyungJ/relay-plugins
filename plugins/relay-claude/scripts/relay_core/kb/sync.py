@@ -13,7 +13,7 @@ handoff and closes a PR that ended without changes.
 import json
 import uuid
 from pathlib import Path
-from .. import RelayError, invocation, repository as gitrepo, watch
+from .. import RelayError, invocation, repository as gitrepo, server_context, watch
 from ..artifacts import digest
 from ..state import read_json, write_json
 from . import changes as changeset, fragment as fragments, gates, handoff, layout, listing, lookup, reconfirm as reconfirmation, remote
@@ -400,6 +400,13 @@ def create_pr(run, repo, gh, store, stages, name):
                                  title=title_for(run), body=body, draft=True, marker=handoff.body_marker(run["run_id"]))
     run["pr"] = {"number": created["number"], "url": created["url"], "body_digest": digest(body)}
     store.save(run)
+    receipt = server_context.publication({
+        "kind": "kb-sync-pr", "request_id": run["run_id"], "run_id": run["run_id"], "result": "created",
+        "repo": repo["repo"], "head": run["branch"], "base": run["default"], "number": created["number"],
+        "url": created["url"], "marker": handoff.body_marker(run["run_id"])})
+    if receipt is not None:
+        run["pr"]["server_receipt"] = receipt
+        store.save(run)
     mark_watch(run, gh, store)
 
 
@@ -463,6 +470,12 @@ def post_record(run, gh, store, state):
     record["comments"][key] = {"id": posted["id"], "url": posted["url"], "round": round_, "state": state}
     if state == "paused":
         record["posted"] = round_
+    receipt = server_context.publication({
+        "kind": "kb-sync-handoff", "request_id": run["run_id"] + ":" + key, "run_id": run["run_id"], "round": round_,
+        "state": state, "limit": record["limit"], "pr": run["pr"]["number"], "target": str(posted["id"]),
+        "url": posted["url"], "result": "created"})
+    if receipt is not None:
+        record["comments"][key]["server_receipt"] = receipt
     store.save(run)
     return record["comments"][key]
 

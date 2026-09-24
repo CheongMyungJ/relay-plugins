@@ -3,7 +3,7 @@ import copy
 import re
 import uuid
 from pathlib import Path
-from . import RelayError, invocation, next_step as steps, repository, watch
+from . import RelayError, invocation, next_step as steps, repository, server_context, watch
 from .github import GitHub
 from .state import ReviewStore, write_json
 from . import review_snapshot as snapshots, review_operations as posts, review_git
@@ -316,6 +316,18 @@ def execution_complete(request, units):
     return True
 
 
+def report_publication(request, units):
+    """Tell a server session host which posting units this review recorded."""
+    receipt = server_context.publication({
+        "kind": "review", "request_id": request["run_id"], "hash": (request.get("candidate") or {}).get("hash"),
+        "pr": request["pr"], "repo": request["repository"].get("repo"), "result": "recorded",
+        "operation": (request.get("decision") or {}).get("action"),
+        "units": [{"unit_id": u.get("unit_id"), "kind": u.get("kind"), "id": u.get("id")} for u in units
+                  if u.get("status") == "recorded"]})
+    if receipt is not None:
+        request["server_receipt"] = receipt
+
+
 def execute(store, request, data, repo, gh):
     candidate = request.get("candidate", {})
     if not candidate or data.get("hash") != candidate["hash"]:
@@ -349,6 +361,9 @@ def execute(store, request, data, repo, gh):
     for unit in candidate["operations"]:
         if set(unit["item_ids"]) & set(selected) and not set(unit["item_ids"]) <= set(selected):
             raise RelayError("approval", "Prepare exact posting units for the selected subset.")
+    if not request.get("decision"):
+        server_context.authorize("review", request["run_id"], candidate["hash"], user=decision["user"],
+                                 operation=decision["action"])
     request.update(decision=decision, status="authorized")
     store.save(request)
     if decision["action"] == "apply":
@@ -385,6 +400,7 @@ def execute(store, request, data, repo, gh):
     request["status"] = "recorded"
     request.pop("error", None)
     mark_watch(request, gh)
+    report_publication(request, units=posts.operations(store, request))
     store.save(request)
     return result(store, request)
 

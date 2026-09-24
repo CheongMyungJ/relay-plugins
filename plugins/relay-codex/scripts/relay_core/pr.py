@@ -3,7 +3,7 @@ import json
 import re
 import uuid
 from pathlib import Path, PurePosixPath
-from . import RelayError, invocation, next_step as steps, repository as gitrepo, watch
+from . import RelayError, invocation, next_step as steps, repository as gitrepo, server_context, watch
 from .artifacts import collect, digest, reference
 from .github import GitHub
 from .runs import parse_evidence
@@ -200,6 +200,15 @@ def save_result(store, request, result, gh=None):
     if request.get("watch") and gh is not None and result.get("status") in ("recorded", "existing"):
         request["watch_result"] = watch.mark(gh, result["number"], True, request.get("watch_result"))
         result["watch"] = request["watch_result"]
+    if result.get("status") in ("recorded", "existing"):
+        outcome = "existing" if result["status"] == "existing" else ("created" if request["operation"] == "create" else "updated")
+        receipt = server_context.publication({
+            "kind": "pr", "request_id": request["request_id"], "hash": request.get("hash"), "result": outcome,
+            "repo": request["repository"].get("repo"), "head": result["head"], "base": result["base"],
+            "number": result["number"], "url": result["url"], "issue": request.get("issue"),
+            "marker": "<!-- relay:pr-request " + request["request_id"] + " -->"})
+        if receipt is not None:
+            result["server_receipt"] = receipt
     request["status"] = result["status"]
     request["result"] = result
     store.save(request)
@@ -351,6 +360,7 @@ def create_request(data, repo, gh, store):
         raise RelayError("stale", "Candidate hash differs; prepare the reviewed content again.")
     if request["constraints"]["draft_only"]:
         return {"status": "prepared", "request_id": request["request_id"], "message": "Body draft only; no remote write."}
+    server_context.authorize("pr", request["request_id"], request["hash"], execution_authorized=True, operation="create")
     found = existing(gh, repo, request["head"], request["base"])
     if found:
         return save_result(store, request, result_for(found, "existing", repo.get("host", "github.com")), gh)
@@ -442,6 +452,7 @@ def update_request(data, repo, gh, store):
         request["status"] = "failed"
         store.save(request)
         raise RelayError("conflict", "PR changed immediately before update; no PATCH sent.")
+    server_context.authorize("pr", request["request_id"], request["hash"], execution_authorized=True, operation="update")
     request.update(status="updating", payload={"title": request["title"], "body": body})
     store.save(request)
     try:

@@ -9,5 +9,5 @@ Relay KB: `scripts/relay_core/kb/`에 묶인 제약이다. 전체는 docs/kb/IND
 - C-6f7014a13d3b440fb49eaa4519bbc5bc: 게이트 검사에 실패한 후보는 오류로 돌려주며 checkpoint·prepare를 통과시키려고 rejected로 자동 강등하지 않는다 (scripts/relay_core/kb/gates.py, scripts/relay_core/kb/sync.py:checkpoint)
 - C-b6d72c0a2444405e902acfde2452c732: 인계 프로토콜 kb-sync PR 본문은 세션 종료·재개·review 신호가 아니며 본문에 relay:next를 넣지 않고 dispatcher도 그 본문을 산출물로 판정하지 않는다 (dispatcher/detect.py:from_pull_body, scripts/relay_core/kb/sync.py:body_for)
 - C-bfbd1bd69ffe48d5b14db52443b17202: GitHub 쓰기의 자동 재시도는 github.py가 HTTP 4xx 확정 거절로 분류한 github_rejected에만 허용하고, 그 밖의 github 오류는 원래 요청을 조회·조정할 불확실 상태로 다룬다 (scripts/relay_core/github.py:GitHub, scripts/relay_core/kb/remote.py)
-- C-d81807369818444aa2e66eca7983e2e9: kb-sync 인계 코멘트 끝줄 앵커(다섯 필드 메타데이터)와 PR 본문 run 마커 형식은 게시된 PR에서 dispatcher가 읽으므로 호환 근거 없이 바꾸지 않는다 (dispatcher/detect.py, dispatcher/loop.py, scripts/relay_core/kb/handoff.py)
+- C-d81807369818444aa2e66eca7983e2e9: kb-sync 인계 코멘트 끝줄 앵커(다섯 필드 메타데이터)와 PR 본문 run 마커 형식은 게시된 PR에서 dispatcher가 읽으므로 호환 근거 없이 바꾸지 않는다 (dispatcher/detect.py, dispatcher/engine.py, dispatcher/loop.py, scripts/relay_core/kb/handoff.py)
 <!-- relay:kb:end -->

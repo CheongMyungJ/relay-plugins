@@ -6,6 +6,8 @@ Use the plugin's absolute `scripts/relay.py` path and an absolute UTF-8 JSON inp
 python <plugin>/scripts/relay.py review --input <absolute-request.json>
 ```
 
+A session relay-server started (`RELAY_SERVER_CONTEXT` is set) also follows [server](server.md).
+
 Actions are `inspect`, `prepare`, `execute`, `resume`. Inspect PID/host before removing a stale PR lock.
 
 ## Inspect

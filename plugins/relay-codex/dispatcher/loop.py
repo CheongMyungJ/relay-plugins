@@ -1,20 +1,24 @@
-"""One polling cycle: watch set → artifacts → ledger first → judgment → launch or wait → cursor."""
+"""The local adapter of the dispatch engine. One polling cycle: watch set → engine decisions →
+ledger and log → launch or wait → cursor.
+
+Judgment lives in `engine`; this module owns the caller's assignee filter, the ledger writes,
+the launcher, the stored-command rechecks and the log.
+"""
 import datetime
 import time
 import uuid
 
-from relay_core import RelayError, next_step as steps
-from relay_core.kb import handoff as handoffs
+from relay_core import RelayError
 from relay_core.watch import LABEL
-from . import config as configuration, detect, policy
+from . import config as configuration, engine as engines, policy
 from .launcher import resume_argv, shell_text
-from .ledger import artifact_key, iso, item_key, model_fields, parse
+from .ledger import iso, item_key, model_fields, parse
 
 OVERLAP = datetime.timedelta(minutes=5)
 
 
 class Context:
-    def __init__(self, *, config, ledger, launcher, log, clock, registry, login, remote_for):
+    def __init__(self, *, config, ledger, launcher, log, clock, registry, login, remote_for, observer=None):
         self.config = config
         self.ledger = ledger
         self.launcher = launcher
@@ -23,14 +27,67 @@ class Context:
         self.registry = registry
         self.login = login
         self.remote_for = remote_for
+        self.observer = observer
+        self._engine = None
+
+    @property
+    def engine(self):
+        if self._engine is None or self._engine.registry is not self.registry:
+            self._engine = engines.DispatchEngine(self.registry, watch=True)
+        return self._engine
+
+    def cycle_input(self):
+        return engines.Cycle(self.config, self.clock())
 
 
-def label_of(artifact):
-    return artifact["kind"] + (f" v{artifact['version']}" if artifact.get("version") else "")
+label_of = engines.label_of
 
 
 def go_command(slug, number):
     return f"relay-dispatch go {slug}#{number}"
+
+
+def apply(ctx, effects):
+    """Write one decision's bookkeeping to the ledger and the log, in order."""
+    ledger, now = ctx.ledger, ctx.clock()
+    for step in effects:
+        data = step.data
+        if step.kind == "processed":
+            ledger.mark_processed(data["key"], now, data["reason"])
+        elif step.kind == "close":
+            ledger.close_session(data["item"], now, data["reason"])
+        elif step.kind == "drop_pending":
+            ledger.pop_pending(data["item"])
+        elif step.kind == "set_pending":
+            ledger.set_pending(data["item"], data["entry"])
+        elif step.kind == "settle":
+            ledger.set_settling(data["item"], now)
+        elif step.kind == "unsettle":
+            ledger.clear_settling(data["item"])
+        elif step.kind == "handoff":
+            ledger.record_handoff(data["slug"], data["run_id"], data["meta"], data["target"], now)
+        elif step.kind == "event":
+            ctx.log.event(data["slug"], data["number"], data["title"], data["label"], data["action"], data["reason"],
+                          data.get("command"))
+        elif step.kind == "line":
+            ctx.log.line(data["text"])
+        else:
+            raise RelayError("run", "unknown engine effect: " + step.kind)
+
+
+def carry_out(ctx, decisions):
+    """Apply each decision before the engine judges further, so it reads the updated ledger."""
+    for decision in decisions:
+        apply(ctx, decision.effects)
+        if ctx.observer is not None:
+            ctx.observer(decision)
+        if decision.action == engines.GATE:
+            entry = decision.entry
+            ctx.ledger.set_pending(decision.item, entry)
+            ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry["artifact"], "게이트 대기", decision.reason,
+                          shell_text(ctx.launcher.session_argv(entry)) + " | " + go_command(entry["slug"], entry["number"]))
+        elif decision.action == engines.START:
+            launch(ctx, decision.item, decision.entry, verified=decision.verified)
 
 
 def launch(ctx, item, entry, verified=False):
@@ -73,36 +130,21 @@ def launch(ctx, item, entry, verified=False):
 
 def handoff_current(ctx, item, entry):
     """Whether a stored kb-sync resume is still its run's latest handoff on the open PR carrying that run."""
-    meta, slug, number = entry["handoff"], entry["slug"], entry["number"]
-    seen = ctx.ledger.handoff(slug, meta["run_id"])
-    reason = None
-    if not seen or handoffs.order(seen) != handoffs.order(meta):
+    engine = ctx.engine
+    if engine.handoff_replaced(ctx.ledger, entry):
         reason = "새 인계 회차로 대체됨"
     else:
         try:
             gh = ctx.remote_for(configuration.identity(entry["cwd"]))
-            pull = gh.pull(number)
-            comments = gh.comments(number)
+            pull = gh.pull(entry["number"])
+            comments = gh.comments(entry["number"])
         except RelayError as exc:
-            gate = "인계 재확인 실패: " + exc.code
-            if entry.get("gate") != gate:
-                ctx.ledger.set_pending(item, dict(entry, gate=gate))
-                ctx.log.event(slug, number, entry.get("title"), entry.get("artifact", "-"), "보류", f"{gate} ({exc})")
+            apply(ctx, engine.handoff_unverified(item, entry, exc.code, exc).effects)
             return False
-        found = [handoffs.read(c.get("body") or "") for c in comments]
-        found = [f[0] for f in found if f and f[0]["run_id"] == meta["run_id"]]
-        latest = max(found, key=handoffs.order, default=None)
-        if pull.get("state") != "open" or pull.get("merged") or pull.get("merged_at"):
-            reason = "PR이 닫혔거나 머지됨"
-        elif handoffs.body_run(pull.get("body")) != (meta["run_id"], handoffs.PROTOCOL):
-            reason = "PR 본문의 kb-sync run 마커와 인계 run이 다름"
-        elif latest != meta:
-            reason = "PR의 최신 인계가 아님"
+        reason = engine.handoff_remote_reason(entry, pull, comments)
     if reason is None:
         return True
-    if (ctx.ledger.pending(item) or {}).get("handoff") == meta:
-        ctx.ledger.pop_pending(item)
-    ctx.log.event(slug, number, entry.get("title"), entry.get("artifact", "-"), "자동 진행 종료", reason)
+    apply(ctx, engine.handoff_stale(ctx.ledger, item, entry, reason).effects)
     return False
 
 
@@ -113,30 +155,15 @@ def resume(ctx, item, session):
 
 def check_pending_transition(ctx, item, entry):
     """Check stored provenance without reconstructing prompts or model selection."""
-    source = entry.get("source_stage")
-    try:
-        source = steps.stage_name(source)
-    except RelayError:
-        reason = "전이 출처 불명: 원본 단계를 확인하고 사람이 재판정해야 함"
-        if entry.get("gate") != reason:
-            ctx.ledger.set_pending(item, dict(entry, gate=reason))
-            ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry.get("artifact", "-"), "보류", reason)
-        return False
-    if steps.allowed(source, entry.get("stage")) and entry.get("stage") is not None:
+    decision = ctx.engine.pending_transition(item, entry)
+    if decision is None:
         return True
-    reason = (steps.blocked_reason(source, entry["stage"]) if entry.get("stage") is not None
-              else "명시적 next 없음: 자동 진행 종료")
-    ctx.ledger.pop_pending(item)
-    ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry.get("artifact", "-"), "자동 진행 종료", reason)
+    apply(ctx, decision.effects)
     return False
 
 
 def regenerate_prompt(ctx, item, entry):
-    """Rebuild a stored implement command once from its number, host and the validated configuration.
-
-    Only the prompt changes; host, model, provenance and the gate stay as they were queued.
-    Returns the updated entry, or None when it cannot be rebuilt (the entry then waits with a reason).
-    """
+    """Rebuild a stored implement command once; returns the updated entry, or None (it then waits with a reason)."""
     repo_entry = {"path": entry["cwd"]}
     for candidate in ctx.config["repos"]:
         try:
@@ -145,20 +172,9 @@ def regenerate_prompt(ctx, item, entry):
                 break
         except RelayError:
             continue
-    try:
-        text = policy.prompt(ctx.registry, entry["host"], "implement", entry["number"],
-                             configuration.settings(ctx.config, repo_entry), entry["cwd"])
-    except RelayError as exc:
-        gate = "프롬프트 재생성 실패: " + str(exc)
-        if entry.get("gate") != gate:
-            ctx.ledger.set_pending(item, dict(entry, gate=gate))
-            ctx.log.event(entry["slug"], entry["number"], entry.get("title"), entry.get("artifact", "-"), "보류", gate)
-        return None
-    stored = ctx.ledger.pending(item)
-    if stored is not None:
-        ctx.ledger.set_pending(item, dict(stored, prompt=text))
-    ctx.log.line(f"{item}: 제거된 implement 옵션이 든 대기 명령을 다시 만들었다: {text}")
-    return dict(entry, prompt=text)
+    rebuilt, decision = ctx.engine.rebuilt_prompt(ctx.ledger, item, entry, ctx.config, repo_entry)
+    apply(ctx, decision.effects)
+    return rebuilt
 
 
 def reconcile_pending(ctx):
@@ -170,196 +186,23 @@ def reconcile_pending(ctx):
 
 def judge(ctx, gh, found, item, raw, artifact, settings, head_key=None, repo_entry=None):
     """Apply D5 to one artifact of one item."""
-    ledger, now, slug, number = ctx.ledger, ctx.clock(), found["slug"], raw["number"]
-    title, label = raw.get("title"), label_of(artifact)
-    session = ledger.session(item)
-    if session and session["stage"] == artifact["stage"]:
-        ledger.close_session(item, now, f"{artifact['kind']} 산출물 게시")
-        ctx.log.event(slug, number, title, label, "산출물 게시", f"{session['stage']} 추적 세션 닫힘; 작업 성공 판정 아님")
-        session = None
-    if artifact["status"] != steps.RECORDED:
-        ctx.log.event(slug, number, title, label, "무시", "relay:next 읽을 수 없음")
-        return
-    next_stage = artifact["next_step"]["next"]
-    action, reason = policy.decide(next_stage, artifact["stage"], session, settings, ctx.config["paused"])
-    if action in (policy.DONE, policy.BLOCKED):
-        ledger.pop_pending(item)
-        ledger.close_session(item, now, reason)
-        ctx.log.event(slug, number, title, label, "자동 진행 종료", reason)
-        return
-    kind = "pr" if "pull_request" in raw else "issue"
-    resumes = kind == "pr" and policy.resumes_run(artifact, next_stage)
-    if not resumes and next_stage not in (None, "open") and not policy.accepts(ctx.registry, next_stage, kind):
-        # A PR item has no issue number to hand to an issue skill, and an issue has no PR to review.
-        ctx.log.event(slug, number, title, label, "무시", f"{next_stage}은(는) {'PR' if kind == 'pr' else '이슈'} 번호를 받지 않음")
-        return
-    if action == policy.IGNORE:
-        ctx.log.event(slug, number, title, label, "무시", reason)
-        return
-    selected = configuration.session_settings(ctx.config, repo_entry or {}, next_stage)
-    try:
-        if resumes:
-            prompt = policy.handoff_prompt(ctx.registry, selected["host"], artifact["handoff"])
-        else:
-            prompt = policy.prompt(ctx.registry, selected["host"], next_stage, number, settings, found["root"])
-    except RelayError as exc:
-        ctx.log.event(slug, number, title, label, "무시", f"프롬프트 조립 실패: {exc}")
-        return
-    selection = selected["selection"]
-    if selection["model_state"] == "host-mismatch":
-        ctx.log.line(f"{slug}#{number} {next_stage}: 모델 {selection['requested_model']} 무시 "
-                     f"(출처 {selection['model_scope']}, host {selection['model_host']} != 최종 host {selected['host']})")
-    entry = {"slug": slug, "number": number, "stage": next_stage, **selected, "cwd": found["root"],
-             "source_stage": artifact["stage"], "source_target": artifact["target"], "source_digest": artifact["digest"],
-             "prompt": prompt, "name": policy.session_name(slug, number, next_stage), "head_key": head_key,
-             "artifact": label, "reason": reason, "gate": reason, "created_at": iso(now), "title": title}
-    if resumes:
-        entry["handoff"] = dict(artifact["handoff"])
-    if action == policy.GATE:
-        ledger.set_pending(item, entry)
-        ctx.log.event(slug, number, title, label, "게이트 대기", reason,
-                      shell_text(ctx.launcher.session_argv(entry)) + " | " + go_command(slug, number))
-        return
-    launch(ctx, item, entry, verified=True)
-
-
-def fresh_artifacts(ctx, slug, candidates):
-    return [(artifact_key(slug, a["target"], a["digest"]), a) for a in candidates
-            if not ctx.ledger.processed(artifact_key(slug, a["target"], a["digest"]))]
+    carry_out(ctx, ctx.engine.judge(ctx.ledger, ctx.cycle_input(), found, item, raw, artifact, settings, head_key,
+                                    repo_entry))
 
 
 def process_issue(ctx, gh, found, raw, settings, since, repo_entry=None):
-    ledger, now, slug, number = ctx.ledger, ctx.clock(), found["slug"], raw["number"]
-    item = item_key(slug, number)
-    candidates = []
-    body = detect.from_issue_body(raw)
-    if body and (raw.get("updated_at") or "") >= since:
-        candidates.append(body)
-    for comment in gh.comments_since(number, since):
-        artifact = detect.from_comment(comment)
-        if artifact:
-            candidates.append(artifact)
-    fresh = fresh_artifacts(ctx, slug, candidates)
-    settling = ledger.settling(item)
-    if not fresh and not settling:
-        return
-    for key, artifact in [(k, a) for k, a in fresh if a["kind"] == "investigation"]:
-        ledger.mark_processed(key, now, "판정")
-        judge(ctx, gh, found, item, raw, artifact, settings, key, repo_entry)
-    fresh = [(k, a) for k, a in fresh if a["kind"] != "investigation"]
-    if not fresh and not settling:
-        return
-    try:
-        result = detect.chain(raw, gh.comments(number))
-    except RelayError as exc:
-        for key, _ in fresh:
-            ledger.mark_processed(key, now, "체인 오류")
-        ctx.log.event(slug, number, raw.get("title"), "-", "무시", f"문서 체인 오류: {exc}")
-        return
-    head = result["head"]
-    head_key = artifact_key(slug, head["target"], head["digest"]) if head else None
-    pending = ledger.pending(item)
-    if pending and pending.get("head_key") != head_key:
-        ledger.pop_pending(item)
-        ctx.log.event(slug, number, raw.get("title"), pending.get("artifact", "-"), "대체됨", "체인 머리가 바뀜")
-    fresh_keys = {k for k, _ in fresh}
-    for key, artifact in fresh:
-        if key != head_key:
-            if head is None:
-                reason = "머리 없음"
-            elif head_key in fresh_keys:
-                reason = "하류 current 문서에 의해 대체"
-            else:
-                reason = "머리가 이번 주기 산출물이 아님"  # e.g. watch added after the chain was published
-            ledger.mark_processed(key, now, reason)
-    if head is None:
-        return
-    if head_key not in fresh_keys and not settling:
-        return
-    if result["downstream_stale"]:
-        if fresh:
-            ledger.mark_processed(head_key, now, "정착 대기")
-            ledger.set_settling(item, now)
-            ctx.log.event(slug, number, raw.get("title"), label_of(head), "정착 대기(하류 stale)", "상위 개정 진행 중일 수 있음")
-            return
-        if now - parse(settling) < datetime.timedelta(seconds=2 * ctx.config["poll_seconds"]):
-            return
-    ledger.clear_settling(item)
-    if head_key in fresh_keys:
-        ledger.mark_processed(head_key, now, "판정")
-    judge(ctx, gh, found, item, raw, head, settings, head_key, repo_entry)
+    pages = engines.Pages(gh, raw["number"], since)
+    carry_out(ctx, ctx.engine.issue(ctx.ledger, ctx.cycle_input(), found, raw, settings, pages, repo_entry))
 
 
 def process_pull(ctx, gh, found, raw, settings, since, repo_entry=None):
-    ledger, now, slug, number = ctx.ledger, ctx.clock(), found["slug"], raw["number"]
-    item = item_key(slug, number)
-    candidates, pull = [], None
-    if (raw.get("updated_at") or "") >= since:
-        pull = gh.pull(number)
-        artifact = detect.from_pull_body(pull)
-        if artifact:
-            candidates.append(artifact)
-    for comment in gh.comments_since(number, since):
-        artifact = detect.from_comment(comment, "pr_comment")
-        if artifact:
-            candidates.append(artifact)
-    for comment in gh.review_comments_since(number, since):
-        artifact = detect.from_review(comment, "inline")
-        if artifact:
-            candidates.append(artifact)
-    for review in gh.reviews(number):
-        if (review.get("submitted_at") or "") >= since:
-            artifact = detect.from_review(review, "review")
-            if artifact:
-                candidates.append(artifact)
-    fresh = drop_stale_handoffs(ctx, found, raw, fresh_artifacts(ctx, slug, candidates))
-    if not fresh:
-        return
-    latest = detect.newest([a for _, a in fresh])
-    for key, artifact in fresh:
-        ledger.mark_processed(key, now, "판정" if artifact is latest else "같은 주기의 더 최근 산출물에 의해 대체")
-    if latest.get("handoff"):
-        pull = pull or gh.pull(number)
-        if handoffs.body_run(pull.get("body")) != (latest["handoff"]["run_id"], handoffs.PROTOCOL):
-            ctx.log.event(slug, number, raw.get("title"), label_of(latest), "무시", "PR 본문의 kb-sync run 마커와 인계 run이 다름")
-            return
-    if pull and (pull.get("merged") or pull.get("merged_at")):
-        ledger.pop_pending(item)
-        ledger.close_session(item, now, "머지됨")
-        ctx.log.event(slug, number, raw.get("title"), label_of(latest), "종료", "PR 머지됨")
-        return
-    if latest.get("handoff"):
-        ledger.record_handoff(slug, latest["handoff"]["run_id"], latest["handoff"], latest["target"], now)
-    judge(ctx, gh, found, item, raw, latest, settings, artifact_key(slug, latest["target"], latest["digest"]), repo_entry)
-
-
-def drop_stale_handoffs(ctx, found, raw, fresh):
-    """Keep one handoff per new (run, round, state); repeats, edits and older rounds never reach judgment.
-
-    They are recorded as processed without touching sessions or pending commands, so a
-    re-posted or edited comment, a restart or a re-poll cannot hand a round out twice.
-    """
-    ledger, now, slug = ctx.ledger, ctx.clock(), found["slug"]
-    kept, taken = [], set()
-    for key, artifact in sorted(fresh, key=lambda ka: handoffs.order(ka[1]["handoff"]) if ka[1].get("handoff") else (0, 0), reverse=True):
-        meta = artifact.get("handoff")
-        if not meta:
-            kept.append((key, artifact))
-            continue
-        seen = ledger.handoff(slug, meta["run_id"])
-        if meta["run_id"] in taken or (seen and handoffs.order(meta) <= handoffs.order(seen)):
-            ledger.mark_processed(key, now, "중복·오래된 인계 회차")
-            ctx.log.event(slug, raw["number"], raw.get("title"), label_of(artifact), "무시",
-                          f"kb-sync {meta['run_id']} 회차 {meta['round']} {meta['state']}는 이미 판정된 인계보다 새롭지 않음")
-            continue
-        taken.add(meta["run_id"])
-        kept.append((key, artifact))
-    return kept
+    pages = engines.Pages(gh, raw["number"], since)
+    carry_out(ctx, ctx.engine.pull(ctx.ledger, ctx.cycle_input(), found, raw, settings, pages, repo_entry))
 
 
 def reconcile_vanished(ctx, gh, found, present):
     """Sessions and gates for items that left the watch set end only when the item is closed."""
-    ledger, now, slug = ctx.ledger, ctx.clock(), found["slug"]
+    ledger, slug = ctx.ledger, found["slug"]
     prefix = slug + "#"
     items = {k for k in list(ledger.open_sessions()) + list(ledger.data["pending"]) if k.startswith(prefix)}
     for item in items:
@@ -370,11 +213,9 @@ def reconcile_vanished(ctx, gh, found, present):
             current = gh.item(number)
         except RelayError:
             continue
-        if current.get("state") == "open" and not current.get("merged"):
-            continue
-        ledger.pop_pending(item)
-        ledger.close_session(item, now, "닫힘")
-        ctx.log.event(slug, number, current.get("title"), "-", "종료", "이슈·PR이 닫힘")
+        decision = ctx.engine.vanished(item, slug, number, current)
+        if decision is not None:
+            carry_out(ctx, [decision])
 
 
 def process_repo(ctx, gh, found, key, settings, start, repo_entry=None):
@@ -404,11 +245,7 @@ def process_repo(ctx, gh, found, key, settings, start, repo_entry=None):
 
 def release_paused(ctx):
     """Entries queued only because of pause start in their queued order once unpaused."""
-    if ctx.config["paused"]:
-        return
-    queued = sorted(((k, v) for k, v in ctx.ledger.data["pending"].items() if v.get("gate") == "일시정지"),
-                    key=lambda kv: kv[1].get("created_at", ""))
-    for item, entry in queued:
+    for item, entry in ctx.engine.paused_queue(ctx.ledger.data["pending"], ctx.config["paused"]):
         launch(ctx, item, dict(entry, reason="일시정지 해제"))
 
 

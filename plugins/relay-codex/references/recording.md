@@ -35,6 +35,7 @@ Document publish authorization:
 ```json
 {"request_id":"returned-id","hash":"returned-hash","approved":true,"user":"actual approving user"}
 ```
+In a server session the user is fixed; see [server](server.md).
 Completed implementation report authorization uses execution_authorized:true and run_id, with matching request_id/hash. Held reports additionally require approved:true and a nonempty user, recording the user's approval of the exact candidate:
 
 ```json

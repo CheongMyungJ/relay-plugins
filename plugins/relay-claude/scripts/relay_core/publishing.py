@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
-from . import RelayError, baselines, watch
+from . import RelayError, baselines, server_context, watch
 from . import next_step as steps
 from .artifacts import collect, decode, digest, mentions_request, normalize, reference, render
 from .state import read_json, write_json
@@ -216,6 +216,7 @@ def publish(store, state, authorization, gh, registry):
         if {k: v for k, v in disk.items() if k != "status"} != {k: v for k, v in frozen.items() if k != "status"}:
             raise RelayError("approval", "Frozen candidate changed.")
     number, target = state["issue"], frozen["target"]
+    creates = target is None or number is None
     uncertain = frozen["status"] == "uncertain"
     # Reconcile before checking parents: a write may already have succeeded.
     if target is not None and number is not None:
@@ -251,6 +252,10 @@ def publish(store, state, authorization, gh, registry):
         if workspace_reference(store, state, frozen["kind"]) != frozen.get("workspace"):
             raise RelayError("stale", "The issue workspace generation or HEAD changed after preparation; prepare again.")
         steps.require_allowed(frozen["kind"], frozen["next_step"])
+        # A server session records the approval with its host before any write; reconciliation above does not.
+        human = not frozen["run_id"] or bool(frozen.get("held"))
+        server_context.authorize(frozen["kind"], frozen["request_id"], frozen["hash"], user=authorization.get("user"),
+                                 execution_authorized=not human, run_id=frozen["run_id"])
         state["status"] = "publication_uncertain"
         frozen["status"] = "uncertain"
         state["authorization"] = {k: authorization[k] for k in ("user", "approved", "execution_authorized", "run_id", "hash", "request_id") if k in authorization}
@@ -292,6 +297,13 @@ def publish(store, state, authorization, gh, registry):
     record = watch.mark(gh, number, state.get("options", {}).get("watch"), frozen.get("watch"))
     if record is not None:
         frozen["watch"] = state["watch"] = state["last_record"]["watch"] = record
+    receipt = server_context.publication({
+        "kind": frozen["kind"], "request_id": frozen["request_id"], "hash": frozen["hash"], "digest": frozen["body_hash"],
+        "target": actual_target, "url": verified["html_url"], "version": frozen["version"], "run_id": frozen["run_id"],
+        "issue": number, "repo": (state.get("repository") or {}).get("repo"), "workspace": frozen.get("workspace"),
+        "result": "created" if creates else "updated"})
+    if receipt is not None:
+        state["last_record"]["server_receipt"] = receipt
     write_json(store.path / "candidate.json", frozen)
     store.save(state)
     return state["last_record"]

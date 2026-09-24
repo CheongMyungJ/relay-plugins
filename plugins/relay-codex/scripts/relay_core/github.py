@@ -106,6 +106,15 @@ class GitHub:
         query = urllib.parse.urlencode({"state": "open", "labels": label, "assignee": login, "per_page": 100})
         return self.api(f"{self.prefix}/issues?{query}", pages=True)
 
+    def labeled(self, label):
+        """Open issues and pull requests carrying the label, whoever is assigned (the server's watch set)."""
+        query = urllib.parse.urlencode({"state": "open", "labels": label, "per_page": 100})
+        return self.api(f"{self.prefix}/issues?{query}", pages=True)
+
+    def issue_assignees(self, number):
+        """Current assignee logins of an issue or pull request, in GitHub's order."""
+        return [a.get("login") for a in self.item(number).get("assignees", []) if a.get("login")]
+
     def comments_since(self, number, since):
         query = urllib.parse.urlencode({"per_page": 100, "since": since})
         return self.api(f"{self.prefix}/issues/{number}/comments?{query}", pages=True)

@@ -6,7 +6,7 @@ import re
 import uuid
 from pathlib import Path
 
-from . import RelayError, watch
+from . import RelayError, server_context, watch
 from . import next_step as steps
 from .artifacts import decode, digest, normalize, render
 from .publishing import matching_request
@@ -140,6 +140,8 @@ def publish(store, state, data, gh):
         if current and digest(current["body"]) != candidate["expected"]:
             raise RelayError("conflict", "Remote investigation changed after review.")
         steps.require_allowed("investigate", candidate["next_step"])
+        server_context.authorize("investigation", candidate["request_id"], candidate["hash"], user=data["user"],
+                                 run_id=key)
         write_json(path / "authorization.json", {k: data[k] for k in ("request_id", "hash", "approved", "user")})
         run["publication"] = "uncertain"
         save(store, state, run)
@@ -169,6 +171,13 @@ def publish(store, state, data, gh):
     if record is not None:
         candidate["watch"] = run["watch"] = run["last_record"]["watch"] = record
         write_json(path / "candidate.json", candidate)
+    receipt = server_context.publication({
+        "kind": "investigation", "request_id": candidate["request_id"], "hash": candidate["hash"], "digest": candidate["hash"],
+        "target": target, "url": verified["html_url"], "version": candidate["version"], "run_id": key,
+        "issue": state["issue"], "repo": (state.get("repository") or {}).get("repo"),
+        "result": "updated" if candidate.get("expected") else "created"})
+    if receipt is not None:
+        run["last_record"]["server_receipt"] = receipt
     save(store, state, run)
     return run["last_record"]
 

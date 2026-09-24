@@ -134,6 +134,16 @@ Relay의 문서 검토·게시 승인 절차는 각 스킬의 규칙을 따릅�
 
 **[dispatch 사용 가이드 →](docs/dispatch.md)** 에서 설치 경로 확인부터 첫 실행, 설정 예제, 재개와 문제 해결까지 안내합니다.
 
+## 선택 기능: 서버 웹 터미널 (relay-server)
+
+팀이 Windows 서버 한 대에서 세션을 실행하려면 Release에 첨부된 `relay-server` ZIP을 사용합니다.
+서버가 dispatch와 같은 규칙으로 다음 단계를 판정해 서버의 Claude Code·Codex로 실행하고,
+허용된 사용자는 브라우저에서 GitHub로 로그인해 그 세션을 웹 터미널로 조작합니다.
+담당자는 여러 명이어도 되며, 허용 목록에 있는 담당자가 한 명 이상이면 자동으로 시작합니다.
+한 저장소는 로컬 dispatch와 서버 중 한 곳에서만 감시합니다.
+
+**[relay-server 사용 가이드 →](docs/server.md)** 에서 서버 준비, 설정, 웹 터미널 사용과 주의 사항을 안내합니다.
+
 ## 업데이트
 
 ```sh
@@ -161,6 +171,7 @@ codex plugin add relay@relay
 | `.agents/plugins/marketplace.json` | Codex 설치 카탈로그 |
 | `plugins/relay-claude` / `plugins/relay-codex` | 호스트별 스킬·런타임·디스패처 패키지 |
 | [docs/dispatch.md](docs/dispatch.md) | 공개 dispatch 사용 가이드 |
+| [docs/server.md](docs/server.md) | 공개 relay-server 사용 가이드 (서버 ZIP은 Release 첨부 파일) |
 
 이 저장소의 패키지와 문서만으로 설치하고 사용할 수 있습니다.
 자동 테스트·설치 검증과 전체 모델 대화 시나리오 검증은 별개이며, 모든 호스트·환경의 전체 대화 검증이 완료된 것은 아닙니다.

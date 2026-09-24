@@ -12,16 +12,31 @@ COLOR = "0e8a16"
 DESCRIPTION = "Relay dispatcher follows this issue or PR"
 
 
-def apply(gh, number, login):
-    """Ensure the label exists, attach it, and add login as an assignee."""
+def ensure_label(gh):
     if gh.label(LABEL) is None:
         gh.create_label({"name": LABEL, "color": COLOR, "description": DESCRIPTION})
-    gh.add_labels(number, [LABEL])
-    response = gh.add_assignees(number, [login])
+
+
+def attach_label(gh, number):
+    """Ensure the label exists and attach it; relay-server marks a new PR this way without --watch."""
+    ensure_label(gh)
+    return gh.add_labels(number, [LABEL])
+
+
+def add_assignees(gh, number, logins):
+    """Add logins and return the resulting sorted assignee list; every login must have been accepted."""
+    response = gh.add_assignees(number, list(logins))
     assignees = sorted(a.get("login") for a in (response or {}).get("assignees", []) if a.get("login"))
-    if login not in assignees:
+    if not set(logins) <= set(assignees):
         # GitHub silently drops assignees who cannot be assigned; the issue keeps its old list.
         raise RelayError("github_rejected", "GitHub did not accept the assignee; repository access is required.")
+    return assignees
+
+
+def apply(gh, number, login):
+    """Ensure the label exists, attach it, and add login as an assignee."""
+    attach_label(gh, number)
+    assignees = add_assignees(gh, number, [login])
     result = {"label": LABEL, "assignee": login, "assignees": assignees, "warning": None}
     if len(assignees) > 1:
         result["warning"] = "multiple assignees"

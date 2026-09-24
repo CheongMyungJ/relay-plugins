@@ -10,7 +10,7 @@ import difflib
 import json
 import uuid
 from pathlib import Path
-from .. import RelayError, invocation, next_step as steps, repository as gitrepo, watch
+from .. import RelayError, invocation, next_step as steps, repository as gitrepo, server_context, watch
 from ..artifacts import digest
 from ..state import read_json, write_json
 from .. import review_snapshot as snapshots, review_git
@@ -382,6 +382,7 @@ def publish(data, repo, gh, store):
         return result
     if request["status"] == "head_advanced":
         fail("Prepare a publish-only candidate for the new head first.", "head_advanced")
+    server_context.authorize("kb", request["request_id"], candidate["hash"], user=data["user"], operation=request["mode"])
     if not (folder / "authorization.json").exists():
         write_json(folder / "authorization.json", {"request_id": request["request_id"], "hash": candidate["hash"], "approved": True, "user": data["user"]})
     stages = remote.Stages(request, lambda: store.save(request))
@@ -460,6 +461,12 @@ def publish(data, repo, gh, store):
         if request.get("small_pr"):
             request["watch_pr_result"] = watch.mark(gh, request["small_pr"]["number"], True, request.get("watch_pr_result"))
             result["watch_small_pr"] = request["watch_pr_result"]
+    receipt = server_context.publication({
+        "kind": "kb", "request_id": request["request_id"], "hash": candidate["hash"], "pr": number,
+        "repo": repo.get("repo"), "target": str(posted["id"]), "url": posted["url"], "commit": request.get("commit"),
+        "small_pr": (request.get("small_pr") or {}).get("number"), "result": "recorded"})
+    if receipt is not None:
+        result["server_receipt"] = receipt
     store.save(request)
     write_json(folder / "result.json", result)
     return result
